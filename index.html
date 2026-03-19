@@ -31,17 +31,11 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        /**
-         * 重要：在單一 HTML 檔案中，不可使用 'import'。
-         * 這裡使用 React 全域變數獲取 hooks。
-         */
         const { useState, useEffect, useMemo } = React;
 
         // --- Firebase 初始化 ---
-        // 確保 __firebase_config 變數已正確注入，若在本地測試請手動填寫 config 物件
         const firebaseConfig = JSON.parse(__firebase_config);
         
-        // 檢查是否已初始化，避免重複初始化錯誤
         if (!firebase.apps.length) {
             firebase.initializeApp(firebaseConfig);
         }
@@ -58,13 +52,76 @@
             { id: 'staff_05', name: '波波 🐶', avatarColor: 'bg-orange-400' },
         ];
 
+        // 定義假別與狀態
         const LEAVE_TYPES = [
             { id: 'REST', label: '休', color: 'text-blue-500', bg: 'bg-blue-50' },
+            { id: 'SPECIAL', label: '特', color: 'text-fuchsia-600', bg: 'bg-fuchsia-50' }, // 新增特休
             { id: 'PERSONAL', label: '事', color: 'text-orange-500', bg: 'bg-orange-50' },
             { id: 'SICK', label: '病', color: 'text-red-500', bg: 'bg-red-50' },
             { id: 'LATE', label: '遲', color: 'text-rose-600', bg: 'bg-rose-50' },
             { id: 'OVERTIME', label: '加', color: 'text-emerald-600', bg: 'bg-emerald-50' },
         ];
+
+        // 模擬數據生成
+        const generateMockData = () => {
+            const records = {};
+            const today = new Date();
+            const year = today.getFullYear();
+            const month = today.getMonth();
+            const lastDay = new Date(year, month + 1, 0).getDate();
+            const currentDay = today.getDate();
+
+            STAFF_MEMBERS.forEach(staff => {
+                const staffRecords = [];
+                const leaveDays = new Set();
+                const specialLeaveDays = new Set();
+                
+                // 1. 隨機生成 7 天普通休假
+                while(leaveDays.size < 7) {
+                    leaveDays.add(Math.floor(Math.random() * lastDay) + 1);
+                }
+
+                // 2. 特休安排 (指定 2 人額外 1-2 天)
+                if (staff.id === 'staff_01' || staff.id === 'staff_02') {
+                    const extraCount = Math.floor(Math.random() * 2) + 1;
+                    while(specialLeaveDays.size < extraCount) {
+                        const d = Math.floor(Math.random() * lastDay) + 1;
+                        if (!leaveDays.has(d)) {
+                            specialLeaveDays.add(d);
+                        }
+                    }
+                }
+
+                // 3. 生成歷史紀錄
+                for (let d = 1; d <= currentDay; d++) {
+                    const date = new Date(year, month, d);
+                    const dayKey = date.toDateString();
+
+                    if (leaveDays.has(d)) {
+                        staffRecords.push({ id: `m-l-${d}`, dayKey, label: '休', type: 'LEAVE' });
+                    } else if (specialLeaveDays.has(d)) {
+                        staffRecords.push({ id: `m-s-${d}`, dayKey, label: '特', type: 'LEAVE' });
+                    } else {
+                        const isLate = Math.random() < 0.02; // 2% 遲到率
+                        staffRecords.push({ id: `m-w-${d}`, dayKey, label: isLate ? '遲' : '上', type: isLate ? 'LEAVE' : 'WORK' });
+                    }
+                }
+                
+                // 4. 未來預排
+                for (let d = currentDay + 1; d <= lastDay; d++) {
+                    const date = new Date(year, month, d);
+                    const dayKey = date.toDateString();
+                    if (leaveDays.has(d)) {
+                        staffRecords.push({ id: `m-pl-${d}`, dayKey, label: '休', type: 'LEAVE' });
+                    } else if (specialLeaveDays.has(d)) {
+                        staffRecords.push({ id: `m-ps-${d}`, dayKey, label: '特', type: 'LEAVE' });
+                    }
+                }
+
+                records[staff.id] = staffRecords;
+            });
+            return records;
+        };
 
         function App() {
             const [user, setUser] = useState(null);
@@ -75,7 +132,6 @@
             const [isActionLoading, setIsActionLoading] = useState(false);
             const [successMsg, setSuccessMsg] = useState('');
 
-            // 1. 處理驗證
             useEffect(() => {
                 const initAuth = async () => {
                     try {
@@ -84,43 +140,42 @@
                         } else {
                             await auth.signInAnonymously();
                         }
-                    } catch (e) { console.error("驗證失敗:", e); }
+                    } catch (e) { console.error(e); }
                 };
                 initAuth();
-                const unsubscribe = auth.onAuthStateChanged((u) => {
-                    setUser(u);
-                });
+                const unsubscribe = auth.onAuthStateChanged((u) => setUser(u));
                 return () => unsubscribe();
             }, []);
 
-            // 2. 監聽 Firestore 數據 (僅在用戶登入後)
             useEffect(() => {
                 if (!user) return;
-                
+                const mockData = generateMockData();
+                setAllRecords(mockData);
+
                 const unsubs = STAFF_MEMBERS.map(staff => {
-                    const collectionPath = `artifacts/${appId}/public/data/records_${staff.id}`;
-                    return db.collection(collectionPath).onSnapshot(
-                        snapshot => {
-                            const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                            setAllRecords(prev => ({ ...prev, [staff.id]: data }));
-                            setLoading(false);
-                        },
-                        error => {
-                            console.error(`讀取 ${staff.name} 數據失敗:`, error);
-                            setLoading(false);
-                        }
-                    );
+                    const path = `artifacts/${appId}/public/data/records_${staff.id}`;
+                    return db.collection(path).onSnapshot(snapshot => {
+                        const cloudData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        setAllRecords(prev => {
+                            const merged = [...(mockData[staff.id] || [])];
+                            cloudData.forEach(cd => {
+                                const idx = merged.findIndex(m => m.dayKey === cd.dayKey);
+                                if (idx > -1) merged[idx] = cd;
+                                else merged.push(cd);
+                            });
+                            return { ...prev, [staff.id]: merged };
+                        });
+                        setLoading(false);
+                    }, () => setLoading(false));
                 });
                 return () => unsubs.forEach(unsub => unsub());
             }, [user]);
 
-            // 3. 更新時鐘
             useEffect(() => {
                 const timer = setInterval(() => setCurrentTime(new Date()), 1000);
                 return () => clearInterval(timer);
             }, []);
 
-            // 今日統計計算
             const stats = useMemo(() => {
                 const todayKey = new Date().toDateString();
                 let work = 0, late = 0, leave = 0, none = 0;
@@ -135,7 +190,6 @@
                 return { work, late, leave, none };
             }, [allRecords]);
 
-            // 打卡處理
             const handleAction = async (type, label = '上') => {
                 if (!user || isActionLoading) return;
                 setIsActionLoading(true);
@@ -145,17 +199,12 @@
 
                 try {
                     await db.collection(path).doc(docId).set({
-                        type, 
-                        label,
-                        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
-                        dayKey: todayKey,
-                        staffId: activeStaff.id
+                        type, label, timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+                        dayKey: todayKey, staffId: activeStaff.id
                     });
                     setSuccessMsg(`【${activeStaff.name}】登記 ${label} 成功！`);
                     setTimeout(() => setSuccessMsg(''), 3000);
-                } catch (e) { 
-                    console.error("打卡失敗:", e);
-                }
+                } catch (e) { console.error(e); }
                 setIsActionLoading(false);
             };
 
@@ -169,36 +218,27 @@
                 });
             }, [currentTime]);
 
-            if (loading) return (
-                <div className="flex h-screen items-center justify-center font-black text-rose-400 italic">
-                    <i className="fas fa-spinner fa-spin mr-2"></i> LOADING SYSTEM...
-                </div>
-            );
+            if (loading) return <div className="flex h-screen items-center justify-center font-black text-rose-400">LOADING...</div>;
 
             return (
                 <div className="min-h-screen p-4 md:p-8">
                     <div className="max-w-7xl mx-auto space-y-6">
-                        
-                        {/* 頂部導航 */}
+                        {/* 標題欄 */}
                         <div className="flex flex-col md:flex-row justify-between items-center bg-white p-6 rounded-[2.5rem] shadow-sm border-2 border-rose-100 gap-4">
                             <div className="flex items-center gap-4">
-                                <div className={`w-14 h-14 ${activeStaff.avatarColor} rounded-2xl flex items-center justify-center text-white text-2xl font-black shadow-lg transform -rotate-3`}>
-                                    {activeStaff.name[0]}
-                                </div>
+                                <div className={`w-14 h-14 ${activeStaff.avatarColor} rounded-2xl flex items-center justify-center text-white text-2xl font-black shadow-lg transform -rotate-3`}>{activeStaff.name[0]}</div>
                                 <div>
                                     <h1 className="text-2xl font-black text-rose-500 italic">智慧管理終端</h1>
                                     <p className="text-xs font-bold text-slate-400">當前人員: {activeStaff.name}</p>
                                 </div>
                             </div>
                             <div className="text-center md:text-right">
-                                <div className="text-3xl font-mono font-black text-slate-800">
-                                    {currentTime.toLocaleTimeString('zh-TW', { hour12: false })}
-                                </div>
+                                <div className="text-3xl font-mono font-black text-slate-800">{currentTime.toLocaleTimeString('zh-TW', { hour12: false })}</div>
                                 <div className="text-[10px] font-black text-rose-300 tracking-[0.3em] uppercase">Cloud Realtime Sync</div>
                             </div>
                         </div>
 
-                        {/* 統計面板 */}
+                        {/* 數據統計 */}
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                             {[
                                 { title: '今日上班', val: stats.work, color: 'emerald' },
@@ -213,84 +253,47 @@
                             ))}
                         </div>
 
-                        {successMsg && (
-                            <div className="bg-emerald-500 text-white p-4 rounded-2xl font-bold shadow-lg text-center animate-bounce">
-                                <i className="fas fa-check-circle mr-2"></i> {successMsg}
-                            </div>
-                        )}
+                        {successMsg && <div className="bg-emerald-500 text-white p-4 rounded-2xl font-bold shadow-lg text-center animate-bounce">{successMsg}</div>}
 
+                        {/* 控制面板 */}
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                            {/* 成員選擇 */}
                             <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-rose-50">
-                                <p className="text-xs font-black text-slate-300 uppercase tracking-widest mb-4"><i className="fas fa-users mr-2"></i>成員切換</p>
+                                <p className="text-xs font-black text-slate-300 uppercase mb-4">成員切換</p>
                                 <div className="space-y-2">
                                     {STAFF_MEMBERS.map(s => (
-                                        <button 
-                                            key={s.id} 
-                                            onClick={() => setActiveStaff(s)}
-                                            className={`w-full text-left px-5 py-4 rounded-2xl font-black transition-all flex items-center justify-between ${activeStaff.id === s.id ? 'bg-rose-500 text-white shadow-xl scale-[1.02]' : 'bg-slate-50 text-slate-400 hover:bg-rose-50'}`}
-                                        >
-                                            {s.name}
-                                            {activeStaff.id === s.id && <i className="fas fa-check-circle text-xs"></i>}
-                                        </button>
+                                        <button key={s.id} onClick={() => setActiveStaff(s)} className={`w-full text-left px-5 py-4 rounded-2xl font-black transition-all ${activeStaff.id === s.id ? 'bg-rose-500 text-white shadow-xl scale-[1.02]' : 'bg-slate-50 text-slate-400 hover:bg-rose-50'}`}>{s.name}</button>
                                     ))}
                                 </div>
                             </div>
-
-                            {/* 簽到 */}
-                            <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-rose-50 flex flex-col justify-between">
-                                <p className="text-xs font-black text-slate-300 uppercase tracking-widest mb-4"><i className="fas fa-clock mr-2"></i>打卡功能</p>
-                                <button 
-                                    onClick={() => handleAction('WORK', '上')}
-                                    disabled={isActionLoading}
-                                    className="w-full h-32 bg-emerald-400 hover:bg-emerald-500 text-white rounded-3xl font-black text-2xl shadow-xl transition-all active:scale-95 flex flex-col items-center justify-center gap-2 disabled:opacity-50"
-                                >
-                                    <i className="fas fa-hand-pointer text-3xl"></i>簽到
-                                </button>
-                                <p className="text-[10px] text-center text-slate-300 font-bold mt-4 italic">數據已與遠端同步</p>
-                            </div>
-
-                            {/* 報備 */}
                             <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-rose-50">
-                                <p className="text-xs font-black text-slate-300 uppercase tracking-widest mb-4"><i className="fas fa-calendar-alt mr-2"></i>狀態報備</p>
+                                <p className="text-xs font-black text-slate-300 uppercase mb-4">打卡功能</p>
+                                <button onClick={() => handleAction('WORK', '上')} disabled={isActionLoading} className="w-full h-32 bg-emerald-400 hover:bg-emerald-500 text-white rounded-3xl font-black text-2xl shadow-xl transition-all active:scale-95 disabled:opacity-50">簽到</button>
+                            </div>
+                            <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-rose-50">
+                                <p className="text-xs font-black text-slate-300 uppercase mb-4">狀態報備 (含特休)</p>
                                 <div className="grid grid-cols-2 gap-3">
                                     {LEAVE_TYPES.map(l => (
-                                        <button 
-                                            key={l.id} 
-                                            onClick={() => handleAction('LEAVE', l.label)}
-                                            disabled={isActionLoading}
-                                            className={`py-4 rounded-2xl font-black border-2 transition-all ${l.bg} ${l.color} border-transparent hover:border-current active:scale-95 disabled:opacity-50`}
-                                        >
-                                            {l.label}
-                                        </button>
+                                        <button key={l.id} onClick={() => handleAction('LEAVE', l.label)} disabled={isActionLoading} className={`py-4 rounded-2xl font-black border-2 transition-all ${l.bg} ${l.color} border-transparent hover:border-current disabled:opacity-50`}>{l.label}</button>
                                     ))}
                                 </div>
                             </div>
                         </div>
 
-                        {/* 明細表 */}
+                        {/* 明細表格 */}
                         <div className="bg-white rounded-[2.5rem] shadow-sm border-2 border-rose-50 overflow-hidden">
-                            <div className="p-6 border-b border-rose-50 flex items-center gap-2">
-                                <i className="fas fa-table text-rose-500"></i>
-                                <h2 className="font-black text-slate-700 italic">全體考勤明細表</h2>
-                            </div>
+                            <div className="p-6 border-b border-rose-50"><h2 className="font-black text-slate-700 italic">全體考勤明細表</h2></div>
                             <div className="overflow-x-auto custom-scroll">
                                 <table className="w-full text-left border-collapse">
                                     <thead>
                                         <tr className="bg-slate-50/50">
-                                            <th className="p-5 font-black text-slate-400 text-[10px] border-r sticky left-0 bg-slate-50 z-10 w-24">人員</th>
-                                            {daysInMonth.map(d => (
-                                                <th key={d.day} className="p-2 text-center border-r min-w-[45px]">
-                                                    <div className="text-[8px] text-slate-300 font-bold uppercase">{d.weekday}</div>
-                                                    <div className="text-xs font-black text-slate-500">{d.day}</div>
-                                                </th>
-                                            ))}
+                                            <th className="p-5 font-black text-slate-400 text-[10px] border-r sticky left-0 bg-slate-50 w-24">人員</th>
+                                            {daysInMonth.map(d => (<th key={d.day} className="p-2 text-center border-r min-w-[45px]"><div className="text-[8px] text-slate-300 font-bold uppercase">{d.weekday}</div><div className="text-xs font-black text-slate-500">{d.day}</div></th>))}
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {STAFF_MEMBERS.map(staff => (
                                             <tr key={staff.id} className="border-t border-rose-50 hover:bg-rose-50/30">
-                                                <td className="p-5 font-black text-sm border-r bg-white sticky left-0 z-10">{staff.name}</td>
+                                                <td className="p-5 font-black text-sm border-r bg-white sticky left-0">{staff.name}</td>
                                                 {daysInMonth.map(d => {
                                                     const rec = (allRecords[staff.id] || []).find(r => r.dayKey === d.fullDate);
                                                     return (
@@ -299,12 +302,11 @@
                                                                 <div className={`w-9 h-9 mx-auto flex items-center justify-center rounded-xl text-xs font-black shadow-sm ${
                                                                     rec.label === '上' ? 'bg-emerald-400 text-white' : 
                                                                     rec.label === '遲' ? 'bg-rose-400 text-white' : 
+                                                                    rec.label === '特' ? 'bg-fuchsia-500 text-white' :
                                                                     rec.label === '加' ? 'bg-emerald-600 text-white' :
                                                                     'bg-sky-400 text-white'
-                                                                }`}>
-                                                                    {rec.label}
-                                                                </div>
-                                                            ) : <div className="text-slate-100 font-black text-[10px]">-</div>}
+                                                                }`}>{rec.label}</div>
+                                                            ) : <div className="text-slate-100">-</div>}
                                                         </td>
                                                     );
                                                 })}
@@ -318,7 +320,6 @@
                 </div>
             );
         }
-
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
     </script>
