@@ -1,385 +1,318 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { initializeApp } from 'firebase/app';
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  setDoc, 
-  getDocs,
-  onSnapshot, 
-  query, 
-  serverTimestamp,
-  writeBatch
-} from 'firebase/firestore';
-import { 
-  getAuth, 
-  signInAnonymously, 
-  signInWithCustomToken, 
-  onAuthStateChanged 
-} from 'firebase/auth';
-import { 
-  Clock, 
-  MapPin, 
-  Calendar as CalIcon, 
-  User, 
-  Coffee, 
-  Star, 
-  Heart,
-  Sparkles,
-  Loader2,
-  Users,
-  Info,
-  AlertCircle,
-  Lock,
-  BarChart3,
-  CalendarDays,
-  ShieldAlert,
-  Send
-} from 'lucide-react';
-
-// --- Firebase 配置 ---
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'kawaii-unified-checkin-v4';
-
-// --- Telegram 機器人 Token ---
-const TELEGRAM_TOKEN = "8356996974:AAHia8miJbschS8rsJFW76XDTnGZ39emHhU";
-
-// 假別定義
-const LEAVE_TYPES = [
-  { id: 'REST', label: '休', color: 'text-blue-500', bg: 'bg-blue-50' },
-  { id: 'PERSONAL', label: '事', color: 'text-orange-500', bg: 'bg-orange-50' },
-  { id: 'SICK', label: '病', color: 'text-red-500', bg: 'bg-red-50' },
-  { id: 'SPECIAL', label: '特', color: 'text-purple-500', bg: 'bg-purple-50' },
-  { id: 'ANNUAL', label: '年', color: 'text-emerald-500', bg: 'bg-emerald-50' },
-  { id: 'OVERTIME', label: '加', color: 'text-yellow-600', bg: 'bg-yellow-50' },
-  { id: 'LATE', label: '遲', color: 'text-rose-600', bg: 'bg-rose-50' },
-];
-
-// --- 人員數據：新增 telegramId 欄位 ---
-const STAFF_MEMBERS = [
-  { id: 'staff_01', name: '小葵 🌻', avatarColor: 'bg-pink-400', telegramId: '1460146542' }, // 範例：你的 ID
-  { id: 'staff_02', name: '阿健 🛠️', avatarColor: 'bg-blue-400', telegramId: '' },
-  { id: 'staff_03', name: '星星 🌟', avatarColor: 'bg-yellow-400', telegramId: '' },
-  { id: 'staff_04', name: '妮妮 🎀', avatarColor: 'bg-purple-400', telegramId: '' },
-  { id: 'staff_05', name: '波波 🐶', avatarColor: 'bg-orange-400', telegramId: '' },
-];
-
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [allRecords, setAllRecords] = useState({});
-  const [currentTime, setCurrentTime] = useState(new Date());
-  const [selectedLeave, setSelectedLeave] = useState('REST');
-  const [isActionLoading, setIsActionLoading] = useState(false);
-  const [activeStaff, setActiveStaff] = useState(STAFF_MEMBERS[0]);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [successMsg, setSuccessMsg] = useState('');
-  const [isInitialized, setIsInitialized] = useState(false);
-
-  // 1. 身分驗證
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) { 
-        console.error("Auth Error:", error);
-      }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // 2. 數據初始化 
-  useEffect(() => {
-    if (!user || isInitialized) return;
-
-    const seedData = async () => {
-      try {
-        const checkRef = collection(db, 'artifacts', appId, 'public', 'data', `records_staff_01`);
-        const snapshot = await getDocs(checkRef);
-        if (!snapshot.empty) {
-          setIsInitialized(true);
-          setLoading(false);
-          return;
-        }
-
-        const today = new Date();
-        const year = today.getFullYear();
-        const month = today.getMonth();
-        const lastDayOfMonth = new Date(year, month + 1, 0).getDate();
-        const currentDay = today.getDate();
-
-        for (const staff of STAFF_MEMBERS) {
-          const batch = writeBatch(db);
-          const restDays = new Set();
-          while (restDays.size < 7) restDays.add(Math.floor(Math.random() * lastDayOfMonth) + 1);
-
-          for (let d = 1; d <= lastDayOfMonth; d++) {
-            const date = new Date(year, month, d);
-            const dateKey = date.toDateString();
-            const docId = `${dateKey.replace(/\s+/g, '-')}_${staff.id}`;
-            const docRef = doc(db, 'artifacts', appId, 'public', 'data', `records_${staff.id}`, docId);
-
-            if (restDays.has(d)) {
-              batch.set(docRef, {
-                type: 'LEAVE',
-                label: '休',
-                timestamp: serverTimestamp(),
-                dayKey: dateKey,
-                staffId: staff.id,
-                isLocked: true 
-              });
-            } else if (d < currentDay) {
-              batch.set(docRef, {
-                type: 'WORK',
-                label: '上',
-                timestamp: serverTimestamp(),
-                dayKey: dateKey,
-                staffId: staff.id,
-                isLocked: true 
-              });
-            }
-          }
-          await batch.commit();
-        }
-        setIsInitialized(true);
-        setLoading(false);
-      } catch (e) {
-        console.error("Seeding Error:", e);
-        setLoading(false);
-      }
-    };
-
-    seedData();
-  }, [user, isInitialized]);
-
-  // 3. 數據監聽
-  useEffect(() => {
-    if (!user) return;
-    const unsubscribes = STAFF_MEMBERS.map(staff => {
-      const recordsCol = collection(db, 'artifacts', appId, 'public', 'data', `records_${staff.id}`);
-      return onSnapshot(recordsCol, (snapshot) => {
-        const data = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setAllRecords(prev => ({ ...prev, [staff.id]: data }));
-      }, (err) => console.error("Listen error:", err));
-    });
-    return () => unsubscribes.forEach(unsub => unsub());
-  }, [user]);
-
-  // 4. 時鐘
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  // --- 動態發送 Telegram ---
-  const sendToTelegram = async (staff, actionLabel) => {
-    // 如果該成員沒有設定 Telegram ID，就跳過發送
-    if (!staff.telegramId) {
-      console.log(`${staff.name} 沒有設定 Telegram ID，僅儲存至資料庫。`);
-      return;
-    }
-
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString('zh-TW', { hour12: false });
-    const dateStr = `${now.getMonth() + 1}/${now.getDate()}`;
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>可愛風雲端全員打卡系統</title>
+    <!-- 載入 React 核心與 Babel (解析 JSX) -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- 載入樣式與圖標 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
-    const message = `📢 打卡通報\n━━━━━━━━━━━━━\n👤 成員：${staff.name}\n📅 日期：${dateStr}\n⏰ 時間：${timeStr}\n✅ 動作：${actionLabel}\n━━━━━━━━━━━━━\n來自雲端考勤系統`;
+    <!-- 載入 Firebase 10.x SDK (相容模式) -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 
-    try {
-      const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-      await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: staff.telegramId,
-          text: message
-        })
-      });
-    } catch (error) {
-      console.error("Telegram Error:", error);
-    }
-  };
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
+        body { 
+            font-family: 'Noto Sans TC', sans-serif; 
+            background-color: #FDF8F9; 
+        }
+        .custom-scroll::-webkit-scrollbar { width: 4px; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #FDA4AF; border-radius: 10px; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
 
-  const handleAction = async (type, label = '') => {
-    if (!auth.currentUser || isActionLoading) return;
-    
-    const todayKey = new Date().toDateString();
-    const todayRecord = (allRecords[activeStaff.id] || []).find(r => r.dayKey === todayKey);
-    
-    if (todayRecord?.isLocked) {
-      setErrorMsg("該紀錄已鎖定。");
-      setTimeout(() => setErrorMsg(''), 3000);
-      return;
-    }
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
 
-    setIsActionLoading(true);
-    const finalLabel = type === 'WORK' ? '上' : label;
+        // --- Firebase 初始化 ---
+        const firebaseConfig = JSON.parse(__firebase_config);
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'kawaii-unified-checkin-v4';
 
-    try {
-      const docId = `${todayKey.replace(/\s+/g, '-')}_${activeStaff.id}`;
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', `records_${activeStaff.id}`, docId);
-      await setDoc(docRef, {
-        type, 
-        label: finalLabel,
-        timestamp: serverTimestamp(),
-        dayKey: todayKey,
-        staffId: activeStaff.id,
-        isLocked: false 
-      });
+        const STAFF_MEMBERS = [
+            { id: 'staff_01', name: '小葵 🌻', avatarColor: 'bg-pink-400' },
+            { id: 'staff_02', name: '阿健 🛠️', avatarColor: 'bg-blue-400' },
+            { id: 'staff_03', name: '星星 🌟', avatarColor: 'bg-yellow-400' },
+            { id: 'staff_04', name: '妮妮 🎀', avatarColor: 'bg-purple-400' },
+            { id: 'staff_05', name: '波波 🐶', avatarColor: 'bg-orange-400' },
+        ];
 
-      // 使用當前選中成員的動態 ID 發送
-      await sendToTelegram(activeStaff, finalLabel);
-      setSuccessMsg(`通報成功！`);
-      setTimeout(() => setSuccessMsg(''), 3000);
+        const LEAVE_TYPES = [
+            { id: 'REST', label: '休', color: 'text-blue-500', bg: 'bg-blue-50' },
+            { id: 'PERSONAL', label: '事', color: 'text-orange-500', bg: 'bg-orange-50' },
+            { id: 'SICK', label: '病', color: 'text-red-500', bg: 'bg-red-50' },
+            { id: 'LATE', label: '遲', color: 'text-rose-600', bg: 'bg-rose-50' },
+        ];
 
-    } catch (e) {
-      setErrorMsg("寫入失敗。");
-    } finally {
-      setIsActionLoading(false);
-    }
-  };
+        function App() {
+            const [user, setUser] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [allRecords, setAllRecords] = useState({});
+            const [currentTime, setCurrentTime] = useState(new Date());
+            const [activeStaff, setActiveStaff] = useState(STAFF_MEMBERS[0]);
+            const [isActionLoading, setIsActionLoading] = useState(false);
+            const [successMsg, setSuccessMsg] = useState('');
 
-  const getStats = (staffId) => {
-    const recs = allRecords[staffId] || [];
-    return {
-      work: recs.filter(r => r.label === '上' || r.label === '遲').length,
-      rest: recs.filter(r => r.label === '休').length,
-      special: recs.filter(r => r.label === '特').length,
-      late: recs.filter(r => r.label === '遲').length
-    };
-  };
+            // 身分驗證
+            useEffect(() => {
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await auth.signInWithCustomToken(__initial_auth_token);
+                        } else {
+                            await auth.signInAnonymously();
+                        }
+                    } catch (e) { console.error(e); }
+                };
+                initAuth();
+                return auth.onAuthStateChanged(setUser);
+            }, []);
 
-  const daysInMonth = useMemo(() => {
-    const year = currentTime.getFullYear();
-    const month = currentTime.getMonth();
-    const days = new Date(year, month + 1, 0).getDate();
-    return Array.from({ length: days }, (_, i) => {
-      const date = new Date(year, month, i + 1);
-      return {
-        day: i + 1,
-        weekday: ['日', '一', '二', '三', '四', '五', '六'][date.getDay()],
-        isWeekend: date.getDay() === 0 || date.getDay() === 6,
-        fullDate: date.toDateString()
-      };
-    });
-  }, [currentTime]);
+            // 實時數據監聽
+            useEffect(() => {
+                if (!user) return;
+                const unsubs = STAFF_MEMBERS.map(staff => {
+                    const path = `artifacts/${appId}/public/data/records_${staff.id}`;
+                    return db.collection(path).onSnapshot(snapshot => {
+                        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        setAllRecords(prev => ({ ...prev, [staff.id]: data }));
+                        setLoading(false);
+                    }, err => console.error(err));
+                });
+                return () => unsubs.forEach(unsub => unsub());
+            }, [user]);
 
-  if (loading) return <div className="p-10 text-center">載入中...</div>;
+            // 時鐘
+            useEffect(() => {
+                const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+                return () => clearInterval(timer);
+            }, []);
 
-  return (
-    <div className="min-h-screen bg-[#FDF8F9] p-4 font-sans">
-      <div className="max-w-7xl mx-auto space-y-6">
-        {successMsg && <div className="bg-emerald-500 text-white p-4 rounded-xl shadow-lg">{successMsg}</div>}
-        {errorMsg && <div className="bg-rose-500 text-white p-4 rounded-xl shadow-lg">{errorMsg}</div>}
+            // 今日統計數據
+            const stats = useMemo(() => {
+                const todayKey = new Date().toDateString();
+                let work = 0, late = 0, leave = 0, none = 0;
+                STAFF_MEMBERS.forEach(s => {
+                    const rec = (allRecords[s.id] || []).find(r => r.dayKey === todayKey);
+                    if (rec) {
+                        if (rec.label === '上') work++;
+                        else if (rec.label === '遲') late++;
+                        else leave++;
+                    } else { none++; }
+                });
+                return { work, late, leave, none };
+            }, [allRecords]);
 
-        <div className="bg-white p-6 rounded-[2rem] shadow-sm border-2 border-rose-100 flex flex-col md:flex-row justify-between items-center">
-          <div className="flex items-center gap-4">
-            <div className={`w-16 h-16 ${activeStaff.avatarColor} rounded-full flex items-center justify-center text-white text-2xl font-bold shadow-lg`}>
-              {activeStaff.name[0]}
-            </div>
-            <div>
-              <h1 className="text-2xl font-black text-rose-500">考勤系統</h1>
-              <p className="text-sm text-slate-400">當前成員：{activeStaff.name}</p>
-            </div>
-          </div>
-          <div className="text-3xl font-mono font-black text-slate-800 bg-slate-100 px-6 py-2 rounded-2xl">
-            {currentTime.toLocaleTimeString('zh-TW', { hour12: false })}
-          </div>
-        </div>
+            // 打卡動作
+            const handleAction = async (type, label = '上') => {
+                if (isActionLoading) return;
+                setIsActionLoading(true);
+                const todayKey = new Date().toDateString();
+                const docId = `${todayKey.replace(/\s+/g, '-')}_${activeStaff.id}`;
+                const path = `artifacts/${appId}/public/data/records_${activeStaff.id}`;
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="bg-white p-4 rounded-2xl shadow-sm border border-rose-50">
-            <p className="text-xs font-bold text-slate-400 mb-3 tracking-widest uppercase">選取成員</p>
-            <div className="space-y-2">
-              {STAFF_MEMBERS.map(s => (
-                <button 
-                  key={s.id} 
-                  onClick={() => setActiveStaff(s)}
-                  className={`w-full text-left px-4 py-3 rounded-xl font-bold transition-all ${activeStaff.id === s.id ? 'bg-rose-500 text-white shadow-md' : 'bg-slate-50 text-slate-500 hover:bg-rose-50'}`}
-                >
-                  {s.name}
-                </button>
-              ))}
-            </div>
-          </div>
+                try {
+                    await db.collection(path).doc(docId).set({
+                        type, label,
+                        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+                        dayKey: todayKey,
+                        staffId: activeStaff.id
+                    });
+                    setSuccessMsg(`${activeStaff.name} 登記成功！`);
+                    setTimeout(() => setSuccessMsg(''), 3000);
+                } catch (e) { console.error(e); }
+                setIsActionLoading(false);
+            };
 
-          <div className="bg-white p-4 rounded-2xl shadow-sm border border-rose-50">
-            <p className="text-xs font-bold text-slate-400 mb-3 tracking-widest uppercase">快速打卡</p>
-            <button 
-              onClick={() => handleAction('WORK')}
-              className="w-full h-24 bg-emerald-400 hover:bg-emerald-500 text-white rounded-2xl font-black text-xl shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2"
-            >
-              <Star fill="white" /> 簽到通報
-            </button>
-          </div>
+            const daysInMonth = useMemo(() => {
+                const year = currentTime.getFullYear();
+                const month = currentTime.getMonth();
+                const days = new Date(year, month + 1, 0).getDate();
+                return Array.from({ length: days }, (_, i) => {
+                    const date = new Date(year, month, i + 1);
+                    return { day: i + 1, weekday: ['日', '一', '二', '三', '四', '五', '六'][date.getDay()], fullDate: date.toDateString() };
+                });
+            }, [currentTime]);
 
-          <div className="bg-white p-4 rounded-2xl shadow-sm border border-rose-50">
-             <p className="text-xs font-bold text-slate-400 mb-3 tracking-widest uppercase">假別登記</p>
-             <div className="grid grid-cols-2 gap-2">
-                {LEAVE_TYPES.slice(0, 4).map(l => (
-                  <button 
-                    key={l.id} 
-                    onClick={() => handleAction('LEAVE', l.label)}
-                    className={`py-3 rounded-xl font-black border-2 transition-all ${l.bg} ${l.color} border-transparent hover:border-current active:scale-95`}
-                  >
-                    {l.label}
-                  </button>
-                ))}
-             </div>
-          </div>
-        </div>
+            if (loading) return (
+                <div className="flex h-screen items-center justify-center font-black text-rose-400 italic animate-pulse">
+                    LOADING SYSTEM...
+                </div>
+            );
 
-        <div className="bg-white rounded-3xl shadow-sm border-2 border-rose-50 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="bg-slate-50">
-                  <th className="p-4 font-black text-slate-400 text-xs border-r">成員</th>
-                  {daysInMonth.map(d => (
-                    <th key={d.day} className="p-2 text-center border-r min-w-[40px]">
-                      <div className="text-[10px] text-slate-400">{d.weekday}</div>
-                      <div className="text-xs font-black">{d.day}</div>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {STAFF_MEMBERS.map(staff => (
-                  <tr key={staff.id} className="border-t border-rose-50">
-                    <td className="p-4 font-bold text-sm border-r bg-white sticky left-0">{staff.name}</td>
-                    {daysInMonth.map(d => {
-                      const rec = (allRecords[staff.id] || []).find(r => r.dayKey === d.fullDate);
-                      return (
-                        <td key={d.day} className="p-1 border-r text-center">
-                          {rec ? (
-                            <div className={`w-8 h-8 mx-auto flex items-center justify-center rounded-lg text-xs font-black ${rec.type === 'WORK' ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'}`}>
-                              {rec.label}
+            return (
+                <div className="min-h-screen p-4 md:p-8">
+                    <div className="max-w-7xl mx-auto space-y-6">
+                        
+                        {/* 頂部導航 */}
+                        <div className="flex flex-col md:flex-row justify-between items-center bg-white p-6 rounded-[2.5rem] shadow-sm border-2 border-rose-100 gap-4">
+                            <div className="flex items-center gap-4">
+                                <div className={`w-14 h-14 ${activeStaff.avatarColor} rounded-2xl flex items-center justify-center text-white text-2xl font-black shadow-lg transform -rotate-3`}>
+                                    {activeStaff.name[0]}
+                                </div>
+                                <div>
+                                    <h1 className="text-2xl font-black text-rose-500 italic">智慧管理終端</h1>
+                                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Operator: {activeStaff.name}</p>
+                                </div>
                             </div>
-                          ) : '-'}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+                            <div className="text-center md:text-right">
+                                <div className="text-3xl font-mono font-black text-slate-800 tracking-tighter">
+                                    {currentTime.toLocaleTimeString('zh-TW', { hour12: false })}
+                                </div>
+                                <div className="text-[10px] font-black text-rose-300 tracking-[0.3em] uppercase">Cloud Sync Active</div>
+                            </div>
+                        </div>
+
+                        {/* 統計面板 */}
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            {[
+                                { title: '今日上班', val: stats.work, color: 'emerald' },
+                                { title: '今日遲到', val: stats.late, color: 'rose' },
+                                { title: '今日休假', val: stats.leave, color: 'sky' },
+                                { title: '尚未打卡', val: stats.none, color: 'slate' }
+                            ].map(item => (
+                                <div key={item.title} className={`bg-white p-5 rounded-3xl border-2 border-${item.color}-50 shadow-sm`}>
+                                    <p className={`text-[10px] font-black text-${item.color}-400 uppercase mb-1`}>{item.title}</p>
+                                    <p className={`text-3xl font-black text-${item.color}-500`}>{item.val}<span className="text-sm ml-1 text-slate-300">人</span></p>
+                                </div>
+                            ))}
+                        </div>
+
+                        {successMsg && (
+                            <div className="bg-emerald-500 text-white p-4 rounded-2xl font-bold shadow-lg text-center animate-bounce">
+                                {successMsg}
+                            </div>
+                        )}
+
+                        {/* 主功能區 */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            {/* 成員選擇 */}
+                            <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-rose-50">
+                                <div className="flex items-center gap-2 mb-4 text-rose-400">
+                                    <i className="fas fa-users"></i>
+                                    <p className="text-xs font-black text-slate-300 uppercase tracking-widest">成員切換</p>
+                                </div>
+                                <div className="space-y-2">
+                                    {STAFF_MEMBERS.map(s => (
+                                        <button 
+                                            key={s.id} 
+                                            onClick={() => setActiveStaff(s)}
+                                            className={`w-full text-left px-5 py-4 rounded-2xl font-black transition-all flex items-center justify-between ${activeStaff.id === s.id ? 'bg-rose-500 text-white shadow-xl scale-[1.02]' : 'bg-slate-50 text-slate-400 hover:bg-rose-50'}`}
+                                        >
+                                            {s.name}
+                                            {activeStaff.id === s.id && <i className="fas fa-paper-plane text-xs"></i>}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* 打卡登記 */}
+                            <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-rose-50 flex flex-col justify-between">
+                                <div>
+                                    <div className="flex items-center gap-2 mb-4 text-rose-400">
+                                        <i className="fas fa-clock"></i>
+                                        <p className="text-xs font-black text-slate-300 uppercase tracking-widest">狀態登記</p>
+                                    </div>
+                                    <button 
+                                        onClick={() => handleAction('WORK', '上')}
+                                        disabled={isActionLoading}
+                                        className="w-full h-32 bg-emerald-400 hover:bg-emerald-500 text-white rounded-3xl font-black text-2xl shadow-xl shadow-emerald-100 transition-all active:scale-95 flex flex-col items-center justify-center gap-2 disabled:opacity-50"
+                                    >
+                                        <i className="fas fa-star text-3xl"></i>
+                                        簽到
+                                    </button>
+                                </div>
+                                <p className="text-[10px] text-center text-slate-300 font-bold mt-4 italic">數據即時同步至雲端看板</p>
+                            </div>
+
+                            {/* 假別報備 */}
+                            <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-rose-50">
+                                <div className="flex items-center gap-2 mb-4 text-rose-400">
+                                    <i className="fas fa-calendar-day"></i>
+                                    <p className="text-xs font-black text-slate-300 uppercase tracking-widest">狀態報備</p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    {LEAVE_TYPES.map(l => (
+                                        <button 
+                                            key={l.id} 
+                                            onClick={() => handleAction('LEAVE', l.label)}
+                                            disabled={isActionLoading}
+                                            className={`py-4 rounded-2xl font-black border-2 transition-all ${l.bg} ${l.color} border-transparent hover:border-current active:scale-95 disabled:opacity-50`}
+                                        >
+                                            {l.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 全體考勤表 */}
+                        <div className="bg-white rounded-[2.5rem] shadow-sm border-2 border-rose-50 overflow-hidden">
+                            <div className="p-6 border-b border-rose-50 flex items-center gap-2">
+                                <i className="fas fa-chart-line text-rose-500"></i>
+                                <h2 className="font-black text-slate-700 italic">全體考勤明細表</h2>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr className="bg-slate-50/50">
+                                            <th className="p-5 font-black text-slate-400 text-[10px] border-r sticky left-0 bg-slate-50 z-10 w-24">成員名稱</th>
+                                            {daysInMonth.map(d => (
+                                                <th key={d.day} className="p-2 text-center border-r min-w-[45px]">
+                                                    <div className="text-[8px] text-slate-300 font-bold uppercase">{d.weekday}</div>
+                                                    <div className="text-xs font-black text-slate-500">{d.day}</div>
+                                                </th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {STAFF_MEMBERS.map(staff => (
+                                            <tr key={staff.id} className="border-t border-rose-50 hover:bg-rose-50/30 transition-colors">
+                                                <td className="p-5 font-black text-sm border-r bg-white sticky left-0 z-10 shadow-[4px_0_10px_rgba(0,0,0,0.02)]">
+                                                    {staff.name}
+                                                </td>
+                                                {daysInMonth.map(d => {
+                                                    const rec = (allRecords[staff.id] || []).find(r => r.dayKey === d.fullDate);
+                                                    return (
+                                                        <td key={d.day} className="p-1 border-r text-center">
+                                                            {rec ? (
+                                                                <div className={`w-9 h-9 mx-auto flex items-center justify-center rounded-xl text-xs font-black shadow-sm ${
+                                                                    rec.label === '上' ? 'bg-emerald-400 text-white' : 
+                                                                    rec.label === '遲' ? 'bg-rose-400 text-white' : 
+                                                                    'bg-sky-400 text-white'
+                                                                }`}>
+                                                                    {rec.label}
+                                                                </div>
+                                                            ) : (
+                                                                <div className="text-slate-100 font-black text-[10px]">-</div>
+                                                            )}
+                                                        </td>
+                                                    );
+                                                })}
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
