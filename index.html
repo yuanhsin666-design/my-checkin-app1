@@ -1,46 +1,385 @@
-/**
- * Telegram 機器人後端 (Vercel Serverless 版)
- * 路徑必須為 /api/bot.js
- */
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDocs,
+  onSnapshot, 
+  query, 
+  serverTimestamp,
+  writeBatch
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  Clock, 
+  MapPin, 
+  Calendar as CalIcon, 
+  User, 
+  Coffee, 
+  Star, 
+  Heart,
+  Sparkles,
+  Loader2,
+  Users,
+  Info,
+  AlertCircle,
+  Lock,
+  BarChart3,
+  CalendarDays,
+  ShieldAlert,
+  Send
+} from 'lucide-react';
 
-const TelegramBot = require('node-telegram-bot-api');
+// --- Firebase 配置 ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'kawaii-unified-checkin-v4';
 
-// 透過 Vercel 環境變數讀取 Token
-const token = process.env.TELEGRAM_BOT_TOKEN;
-const bot = new TelegramBot(token);
+// --- Telegram 機器人 Token ---
+const TELEGRAM_TOKEN = "8356996974:AAHia8miJbschS8rsJFW76XDTnGZ39emHhU";
 
-// 模擬今日數據統計 (若不使用資料庫，此處為展示用固定數據)
-const getStats = () => {
-    return {
-        leave: 1,
-        late: 0,
-        normal: 25
+// 假別定義
+const LEAVE_TYPES = [
+  { id: 'REST', label: '休', color: 'text-blue-500', bg: 'bg-blue-50' },
+  { id: 'PERSONAL', label: '事', color: 'text-orange-500', bg: 'bg-orange-50' },
+  { id: 'SICK', label: '病', color: 'text-red-500', bg: 'bg-red-50' },
+  { id: 'SPECIAL', label: '特', color: 'text-purple-500', bg: 'bg-purple-50' },
+  { id: 'ANNUAL', label: '年', color: 'text-emerald-500', bg: 'bg-emerald-50' },
+  { id: 'OVERTIME', label: '加', color: 'text-yellow-600', bg: 'bg-yellow-50' },
+  { id: 'LATE', label: '遲', color: 'text-rose-600', bg: 'bg-rose-50' },
+];
+
+// --- 人員數據：新增 telegramId 欄位 ---
+const STAFF_MEMBERS = [
+  { id: 'staff_01', name: '小葵 🌻', avatarColor: 'bg-pink-400', telegramId: '1460146542' }, // 範例：你的 ID
+  { id: 'staff_02', name: '阿健 🛠️', avatarColor: 'bg-blue-400', telegramId: '' },
+  { id: 'staff_03', name: '星星 🌟', avatarColor: 'bg-yellow-400', telegramId: '' },
+  { id: 'staff_04', name: '妮妮 🎀', avatarColor: 'bg-purple-400', telegramId: '' },
+  { id: 'staff_05', name: '波波 🐶', avatarColor: 'bg-orange-400', telegramId: '' },
+];
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [allRecords, setAllRecords] = useState({});
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [selectedLeave, setSelectedLeave] = useState('REST');
+  const [isActionLoading, setIsActionLoading] = useState(false);
+  const [activeStaff, setActiveStaff] = useState(STAFF_MEMBERS[0]);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
+  const [isInitialized, setIsInitialized] = useState(false);
+
+  // 1. 身分驗證
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) { 
+        console.error("Auth Error:", error);
+      }
     };
-};
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+    });
+    return () => unsubscribe();
+  }, []);
 
-export default async (request, response) => {
-    try {
-        const { body } = request;
+  // 2. 數據初始化 
+  useEffect(() => {
+    if (!user || isInitialized) return;
 
-        // 檢查是否為 Telegram 的更新訊息
-        if (body && body.message) {
-            const chatId = body.message.chat.id;
-            const text = body.message.text;
-
-            if (text === '/start') {
-                await bot.sendMessage(chatId, "你好！我是 DayDay 助手。輸入 /today 即可查看今日即時報表。");
-            } 
-            else if (text === '/status' || text === '/today') {
-                const stats = getStats();
-                const report = `📊 今日報表\n---\n🏖 休假：${stats.leave}人\n⏰ 遲到：${stats.late}人\n✅ 正常出勤：${stats.normal}人`;
-                await bot.sendMessage(chatId, report);
-            }
+    const seedData = async () => {
+      try {
+        const checkRef = collection(db, 'artifacts', appId, 'public', 'data', `records_staff_01`);
+        const snapshot = await getDocs(checkRef);
+        if (!snapshot.empty) {
+          setIsInitialized(true);
+          setLoading(false);
+          return;
         }
 
-        // Vercel 必須回傳 200 回應給 Telegram，否則 Telegram 會重複發送訊息
-        response.status(200).send('OK');
-    } catch (error) {
-        console.error('Error:', error);
-        response.status(500).send('Internal Server Error');
+        const today = new Date();
+        const year = today.getFullYear();
+        const month = today.getMonth();
+        const lastDayOfMonth = new Date(year, month + 1, 0).getDate();
+        const currentDay = today.getDate();
+
+        for (const staff of STAFF_MEMBERS) {
+          const batch = writeBatch(db);
+          const restDays = new Set();
+          while (restDays.size < 7) restDays.add(Math.floor(Math.random() * lastDayOfMonth) + 1);
+
+          for (let d = 1; d <= lastDayOfMonth; d++) {
+            const date = new Date(year, month, d);
+            const dateKey = date.toDateString();
+            const docId = `${dateKey.replace(/\s+/g, '-')}_${staff.id}`;
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', `records_${staff.id}`, docId);
+
+            if (restDays.has(d)) {
+              batch.set(docRef, {
+                type: 'LEAVE',
+                label: '休',
+                timestamp: serverTimestamp(),
+                dayKey: dateKey,
+                staffId: staff.id,
+                isLocked: true 
+              });
+            } else if (d < currentDay) {
+              batch.set(docRef, {
+                type: 'WORK',
+                label: '上',
+                timestamp: serverTimestamp(),
+                dayKey: dateKey,
+                staffId: staff.id,
+                isLocked: true 
+              });
+            }
+          }
+          await batch.commit();
+        }
+        setIsInitialized(true);
+        setLoading(false);
+      } catch (e) {
+        console.error("Seeding Error:", e);
+        setLoading(false);
+      }
+    };
+
+    seedData();
+  }, [user, isInitialized]);
+
+  // 3. 數據監聽
+  useEffect(() => {
+    if (!user) return;
+    const unsubscribes = STAFF_MEMBERS.map(staff => {
+      const recordsCol = collection(db, 'artifacts', appId, 'public', 'data', `records_${staff.id}`);
+      return onSnapshot(recordsCol, (snapshot) => {
+        const data = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setAllRecords(prev => ({ ...prev, [staff.id]: data }));
+      }, (err) => console.error("Listen error:", err));
+    });
+    return () => unsubscribes.forEach(unsub => unsub());
+  }, [user]);
+
+  // 4. 時鐘
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // --- 動態發送 Telegram ---
+  const sendToTelegram = async (staff, actionLabel) => {
+    // 如果該成員沒有設定 Telegram ID，就跳過發送
+    if (!staff.telegramId) {
+      console.log(`${staff.name} 沒有設定 Telegram ID，僅儲存至資料庫。`);
+      return;
     }
-};
+
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('zh-TW', { hour12: false });
+    const dateStr = `${now.getMonth() + 1}/${now.getDate()}`;
+    
+    const message = `📢 打卡通報\n━━━━━━━━━━━━━\n👤 成員：${staff.name}\n📅 日期：${dateStr}\n⏰ 時間：${timeStr}\n✅ 動作：${actionLabel}\n━━━━━━━━━━━━━\n來自雲端考勤系統`;
+
+    try {
+      const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: staff.telegramId,
+          text: message
+        })
+      });
+    } catch (error) {
+      console.error("Telegram Error:", error);
+    }
+  };
+
+  const handleAction = async (type, label = '') => {
+    if (!auth.currentUser || isActionLoading) return;
+    
+    const todayKey = new Date().toDateString();
+    const todayRecord = (allRecords[activeStaff.id] || []).find(r => r.dayKey === todayKey);
+    
+    if (todayRecord?.isLocked) {
+      setErrorMsg("該紀錄已鎖定。");
+      setTimeout(() => setErrorMsg(''), 3000);
+      return;
+    }
+
+    setIsActionLoading(true);
+    const finalLabel = type === 'WORK' ? '上' : label;
+
+    try {
+      const docId = `${todayKey.replace(/\s+/g, '-')}_${activeStaff.id}`;
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', `records_${activeStaff.id}`, docId);
+      await setDoc(docRef, {
+        type, 
+        label: finalLabel,
+        timestamp: serverTimestamp(),
+        dayKey: todayKey,
+        staffId: activeStaff.id,
+        isLocked: false 
+      });
+
+      // 使用當前選中成員的動態 ID 發送
+      await sendToTelegram(activeStaff, finalLabel);
+      setSuccessMsg(`通報成功！`);
+      setTimeout(() => setSuccessMsg(''), 3000);
+
+    } catch (e) {
+      setErrorMsg("寫入失敗。");
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const getStats = (staffId) => {
+    const recs = allRecords[staffId] || [];
+    return {
+      work: recs.filter(r => r.label === '上' || r.label === '遲').length,
+      rest: recs.filter(r => r.label === '休').length,
+      special: recs.filter(r => r.label === '特').length,
+      late: recs.filter(r => r.label === '遲').length
+    };
+  };
+
+  const daysInMonth = useMemo(() => {
+    const year = currentTime.getFullYear();
+    const month = currentTime.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    return Array.from({ length: days }, (_, i) => {
+      const date = new Date(year, month, i + 1);
+      return {
+        day: i + 1,
+        weekday: ['日', '一', '二', '三', '四', '五', '六'][date.getDay()],
+        isWeekend: date.getDay() === 0 || date.getDay() === 6,
+        fullDate: date.toDateString()
+      };
+    });
+  }, [currentTime]);
+
+  if (loading) return <div className="p-10 text-center">載入中...</div>;
+
+  return (
+    <div className="min-h-screen bg-[#FDF8F9] p-4 font-sans">
+      <div className="max-w-7xl mx-auto space-y-6">
+        {successMsg && <div className="bg-emerald-500 text-white p-4 rounded-xl shadow-lg">{successMsg}</div>}
+        {errorMsg && <div className="bg-rose-500 text-white p-4 rounded-xl shadow-lg">{errorMsg}</div>}
+
+        <div className="bg-white p-6 rounded-[2rem] shadow-sm border-2 border-rose-100 flex flex-col md:flex-row justify-between items-center">
+          <div className="flex items-center gap-4">
+            <div className={`w-16 h-16 ${activeStaff.avatarColor} rounded-full flex items-center justify-center text-white text-2xl font-bold shadow-lg`}>
+              {activeStaff.name[0]}
+            </div>
+            <div>
+              <h1 className="text-2xl font-black text-rose-500">考勤系統</h1>
+              <p className="text-sm text-slate-400">當前成員：{activeStaff.name}</p>
+            </div>
+          </div>
+          <div className="text-3xl font-mono font-black text-slate-800 bg-slate-100 px-6 py-2 rounded-2xl">
+            {currentTime.toLocaleTimeString('zh-TW', { hour12: false })}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="bg-white p-4 rounded-2xl shadow-sm border border-rose-50">
+            <p className="text-xs font-bold text-slate-400 mb-3 tracking-widest uppercase">選取成員</p>
+            <div className="space-y-2">
+              {STAFF_MEMBERS.map(s => (
+                <button 
+                  key={s.id} 
+                  onClick={() => setActiveStaff(s)}
+                  className={`w-full text-left px-4 py-3 rounded-xl font-bold transition-all ${activeStaff.id === s.id ? 'bg-rose-500 text-white shadow-md' : 'bg-slate-50 text-slate-500 hover:bg-rose-50'}`}
+                >
+                  {s.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-2xl shadow-sm border border-rose-50">
+            <p className="text-xs font-bold text-slate-400 mb-3 tracking-widest uppercase">快速打卡</p>
+            <button 
+              onClick={() => handleAction('WORK')}
+              className="w-full h-24 bg-emerald-400 hover:bg-emerald-500 text-white rounded-2xl font-black text-xl shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2"
+            >
+              <Star fill="white" /> 簽到通報
+            </button>
+          </div>
+
+          <div className="bg-white p-4 rounded-2xl shadow-sm border border-rose-50">
+             <p className="text-xs font-bold text-slate-400 mb-3 tracking-widest uppercase">假別登記</p>
+             <div className="grid grid-cols-2 gap-2">
+                {LEAVE_TYPES.slice(0, 4).map(l => (
+                  <button 
+                    key={l.id} 
+                    onClick={() => handleAction('LEAVE', l.label)}
+                    className={`py-3 rounded-xl font-black border-2 transition-all ${l.bg} ${l.color} border-transparent hover:border-current active:scale-95`}
+                  >
+                    {l.label}
+                  </button>
+                ))}
+             </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-3xl shadow-sm border-2 border-rose-50 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-slate-50">
+                  <th className="p-4 font-black text-slate-400 text-xs border-r">成員</th>
+                  {daysInMonth.map(d => (
+                    <th key={d.day} className="p-2 text-center border-r min-w-[40px]">
+                      <div className="text-[10px] text-slate-400">{d.weekday}</div>
+                      <div className="text-xs font-black">{d.day}</div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {STAFF_MEMBERS.map(staff => (
+                  <tr key={staff.id} className="border-t border-rose-50">
+                    <td className="p-4 font-bold text-sm border-r bg-white sticky left-0">{staff.name}</td>
+                    {daysInMonth.map(d => {
+                      const rec = (allRecords[staff.id] || []).find(r => r.dayKey === d.fullDate);
+                      return (
+                        <td key={d.day} className="p-1 border-r text-center">
+                          {rec ? (
+                            <div className={`w-8 h-8 mx-auto flex items-center justify-center rounded-lg text-xs font-black ${rec.type === 'WORK' ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'}`}>
+                              {rec.label}
+                            </div>
+                          ) : '-'}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
