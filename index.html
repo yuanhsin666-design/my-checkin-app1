@@ -1,265 +1,363 @@
-import React, { useState, useEffect } from 'react';
-import { initializeApp, getApps } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot, collection, serverTimestamp, query } from 'firebase/firestore';
-
-// --- 正式 Firebase 金鑰 ---
-const firebaseConfig = {
-  apiKey: "AIzaSyCklhV_IZpDuH6NuGNFVPfuVzVcMC2sd_w",
-  authDomain: "my-checkin-app1.firebaseapp.com",
-  projectId: "my-checkin-app1",
-  storageBucket: "my-checkin-app1.firebasestorage.app",
-  messagingSenderId: "844504622971",
-  appId: "1:844504622971:web:e779f4fb2a67f24797ffde",
-  measurementId: "G-G6J48CCJW4"
-};
-
-// 安全初始化
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = 'kawaii-unified-checkin-v4';
-
-const STAFF_MEMBERS = [
-  { id: 'staff_01', name: '小葵 🌻' },
-  { id: 'staff_02', name: '阿健 🛠️' },
-  { id: 'staff_03', name: '星星 🌟' },
-  { id: 'staff_04', name: '妮妮 🎀' },
-  { id: 'staff_05', name: '波波 🐶' }
-];
-
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [currentStaff, setCurrentStaff] = useState(STAFF_MEMBERS[0]);
-  const [attendanceData, setAttendanceData] = useState({});
-  const [toast, setToast] = useState({ show: false, msg: '', isError: false });
-  const [currentTime, setCurrentTime] = useState(new Date());
-  const [isConnecting, setIsConnecting] = useState(true);
-
-  // 1. 處理身份驗證
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        console.log("正在嘗試匿名登入 Firebase...");
-        const result = await signInAnonymously(auth);
-        console.log("登入成功:", result.user.uid);
-        setUser(result.user);
-        setIsConnecting(false);
-      } catch (err) {
-        console.error("Firebase Auth Error:", err);
-        showToast(`連線失敗: ${err.message}`, true);
-        setIsConnecting(false);
-      }
-    };
-    
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-        if (u) setUser(u);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // 2. 監聽數據
-  useEffect(() => {
-    if (!user) return;
-
-    const unsubscribes = STAFF_MEMBERS.map(staff => {
-      const colPath = `artifacts/${appId}/public/data/records_${staff.id}`;
-      const colRef = collection(db, colPath);
-      
-      return onSnapshot(colRef, (snapshot) => {
-        const staffRecords = {};
-        snapshot.docs.forEach(d => {
-          const data = d.data();
-          if (data.dayKey) staffRecords[data.dayKey] = data.label;
-        });
-        setAttendanceData(prev => ({ ...prev, [staff.id]: staffRecords }));
-      }, (err) => {
-        console.error(`數據監聽失敗 (${staff.id}):`, err);
-        // 如果報錯是權限問題，通常是 Firebase Rules 沒設好
-        if (err.code === 'permission-denied') {
-            showToast("權限不足，請檢查 Firebase Rules", true);
-        }
-      });
-    });
-
-    return () => unsubscribes.forEach(unsub => unsub());
-  }, [user]);
-
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const showToast = (msg, isError = false) => {
-    setToast({ show: true, msg, isError });
-    setTimeout(() => setToast({ show: false, msg: '', isError: false }), 4000);
-  };
-
-  const handleCheckIn = async (type, label) => {
-    if (!user) {
-        showToast("尚未連線至雲端，請重新整理頁面", true);
-        return;
-    }
-    
-    const today = new Date();
-    const todayKey = today.toDateString();
-    const docId = `${todayKey.replace(/\s+/g, '-')}_${currentStaff.id}`;
-    
-    try {
-      const colPath = `artifacts/${appId}/public/data/records_${currentStaff.id}`;
-      const docRef = doc(db, colPath, docId);
-      
-      await setDoc(docRef, {
-        staffId: currentStaff.id,
-        name: currentStaff.name,
-        type, label,
-        time: today.toLocaleTimeString('zh-TW', { hour12: false }),
-        dayKey: todayKey,
-        timestamp: serverTimestamp()
-      });
-      showToast(`✨ ${currentStaff.name} 打卡成功 (${label})`);
-    } catch (err) {
-      console.error("儲存失敗:", err);
-      showToast(`儲存失敗: ${err.code || '未知錯誤'}`, true);
-    }
-  };
-
-  const daysInMonth = Array.from({ length: 31 }, (_, i) => i + 1);
-
-  return (
-    <div className="min-h-screen bg-[#fff5f7] p-4 md:p-8 font-sans text-slate-700">
-      <div className="max-w-6xl mx-auto space-y-6">
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KAWAII SYSTEM - 雲端考勤管理</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
         
-        {/* Header */}
-        <header className="bg-white rounded-[2rem] p-6 shadow-sm border border-rose-50 flex flex-col md:flex-row justify-between items-center gap-4">
-          <div className="flex items-center gap-4">
-            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-white text-2xl font-black shadow-lg transition-colors ${user ? 'bg-rose-400' : 'bg-slate-300 animate-pulse'}`}>
-                {user ? '小' : '...'}
+        body {
+            background-color: #fff5f7;
+            font-family: 'Noto Sans TC', sans-serif;
+            color: #4a4a4a;
+        }
+
+        .glass-panel {
+            background: white;
+            border-radius: 30px;
+            box-shadow: 0 10px 30px rgba(255, 182, 193, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.8);
+        }
+
+        .member-btn {
+            transition: all 0.3s;
+            border: 1px solid #f0f0f0;
+        }
+
+        .member-btn.active {
+            background: linear-gradient(135deg, #ff6b8b, #ff85a2);
+            color: white !important;
+            border-color: #ff5c81;
+            box-shadow: 0 8px 15px rgba(255, 107, 139, 0.3);
+        }
+
+        .check-in-main {
+            transition: all 0.3s;
+        }
+
+        .check-in-main:active:not(:disabled) {
+            transform: scale(0.95);
+        }
+
+        .custom-scroll::-webkit-scrollbar {
+            height: 6px;
+        }
+        .custom-scroll::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        .custom-scroll::-webkit-scrollbar-thumb {
+            background: #ffb6c1;
+            border-radius: 10px;
+        }
+
+        .status-dot {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            font-size: 12px;
+            font-weight: 900;
+            color: white;
+        }
+        .dot-work { background-color: #4ade80; }
+        .dot-late { background-color: #f87171; }
+        .dot-leave { background-color: #60a5fa; }
+        .dot-other { background-color: #c084fc; }
+    </style>
+</head>
+<body class="p-6">
+
+    <div class="max-w-6xl mx-auto space-y-6">
+        <header class="glass-panel p-6 flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <div id="status-icon" class="w-14 h-14 bg-gray-200 rounded-2xl flex items-center justify-center text-white text-2xl font-black shadow-md transition-colors">
+                    ?
+                </div>
+                <div>
+                    <h1 class="text-2xl font-black text-[#ff4d7d] tracking-tighter italic">KAWAII SYSTEM</h1>
+                    <p class="text-xs font-bold text-gray-400">連線狀態：<span id="sync-status" class="text-amber-500 font-black">正在初始化...</span></p>
+                </div>
             </div>
-            <div>
-              <h1 className="text-2xl font-black text-rose-500 tracking-tight italic">KAWAII SYSTEM</h1>
-              <p className="text-xs font-bold text-rose-300">
-                連線狀態：
-                <span className={user ? "text-emerald-500" : "text-amber-500"}>
-                    {user ? "● 已連線至雲端" : isConnecting ? "○ 正在連線..." : "× 連線失敗"}
-                </span>
-              </p>
+            <div class="text-right">
+                <p id="clock" class="text-3xl font-black text-gray-700 leading-none tabular-nums">00:00:00</p>
+                <p id="current-date" class="text-[10px] font-bold text-rose-300 uppercase mt-2">LOADING DATE...</p>
             </div>
-          </div>
-          <div className="text-center md:text-right">
-            <div className="text-3xl font-black text-slate-700 tabular-nums">
-              {currentTime.toLocaleTimeString('zh-TW', { hour12: false })}
-            </div>
-            <div className="text-[10px] font-bold text-rose-300 tracking-widest uppercase">
-              {currentTime.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
-            </div>
-          </div>
         </header>
 
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
-          {/* Staff Panel */}
-          <div className="md:col-span-3 bg-white rounded-[2rem] p-6 shadow-sm border border-rose-50">
-            <p className="text-[10px] font-black text-rose-200 uppercase tracking-widest mb-4">Member Panel</p>
-            <div className="space-y-2">
-              {STAFF_MEMBERS.map(staff => (
-                <button
-                  key={staff.id}
-                  onClick={() => setCurrentStaff(staff)}
-                  className={`w-full p-4 rounded-2xl flex justify-between items-center font-bold transition-all ${
-                    currentStaff.id === staff.id 
-                    ? 'bg-rose-500 text-white shadow-md scale-[1.02]' 
-                    : 'bg-rose-50/30 text-slate-400 hover:bg-rose-50'
-                  }`}
-                >
-                  <span>{staff.name}</span>
-                </button>
-              ))}
+        <div class="grid grid-cols-12 gap-6">
+            <!-- 人員選擇 -->
+            <div class="col-span-12 md:col-span-3 glass-panel p-6">
+                <p class="text-[10px] font-black text-rose-200 uppercase tracking-widest mb-4">MEMBER PANEL</p>
+                <div id="staff-list" class="space-y-3">
+                    <!-- 由 JS 動態生成 -->
+                </div>
             </div>
-          </div>
 
-          {/* Main Action */}
-          <div className="md:col-span-6 bg-white rounded-[2.5rem] p-10 shadow-sm border border-rose-50 flex flex-col items-center justify-center relative overflow-hidden group">
-            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-300 via-rose-300 to-blue-300"></div>
-            <p className="text-[10px] font-black text-rose-200 uppercase tracking-widest mb-10">Instant Check-In</p>
-            <button 
-              onClick={() => handleCheckIn('WORK', '上')}
-              disabled={!user}
-              className={`w-full max-w-[280px] aspect-[16/10] rounded-[3rem] shadow-lg flex flex-col items-center justify-center text-white gap-2 transition-all ${
-                user ? 'bg-emerald-400 hover:bg-emerald-500 active:scale-95' : 'bg-slate-200 cursor-not-allowed'
-              }`}
-            >
-              <span className="text-4xl font-black tracking-tighter">{user ? "即刻簽到" : "連線中..."}</span>
-            </button>
-          </div>
-
-          {/* Extra Options */}
-          <div className="md:col-span-3 bg-white rounded-[2rem] p-6 shadow-sm border border-rose-50">
-            <p className="text-[10px] font-black text-rose-200 uppercase tracking-widest mb-4">Extra Options</p>
-            <div className="grid grid-cols-2 gap-3">
-              {['休', '特', '事', '病', '遲', '加'].map(l => (
-                <button
-                  key={l}
-                  disabled={!user}
-                  onClick={() => handleCheckIn('OTHER', l)}
-                  className="p-4 rounded-2xl font-black text-lg transition-transform active:scale-90 bg-rose-50/50 text-rose-400 disabled:opacity-50"
-                >
-                  {l}
+            <!-- 主打卡區 -->
+            <div class="col-span-12 md:col-span-6 glass-panel p-10 flex flex-col items-center justify-center relative overflow-hidden group">
+                <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-300 via-rose-300 to-blue-300"></div>
+                <p class="text-[10px] font-black text-rose-200 uppercase tracking-widest mb-10">INSTANT CHECK-IN</p>
+                <button id="btn-main-checkin" disabled class="bg-gray-200 w-full max-w-[280px] aspect-[16/10] rounded-[3rem] shadow-lg flex flex-col items-center justify-center text-white gap-2 relative z-10 cursor-not-allowed">
+                    <span id="checkin-text" class="text-4xl font-black tracking-tighter">連線中...</span>
                 </button>
-              ))}
             </div>
-          </div>
+
+            <!-- 其他選項 -->
+            <div class="col-span-12 md:col-span-3 glass-panel p-6">
+                <p class="text-[10px] font-black text-rose-200 uppercase tracking-widest mb-4">EXTRA OPTIONS</p>
+                <div class="grid grid-cols-2 gap-3">
+                    <button onclick="handleCheckIn('WORK', '遲')" class="p-4 bg-red-50 text-red-400 rounded-2xl font-black hover:bg-red-100 transition-colors">遲</button>
+                    <button onclick="handleCheckIn('LEAVE', '休')" class="p-4 bg-blue-50 text-blue-500 rounded-2xl font-black hover:bg-blue-100 transition-colors">休</button>
+                    <button onclick="handleCheckIn('LEAVE', '事')" class="p-4 bg-orange-50 text-orange-500 rounded-2xl font-black hover:bg-orange-100 transition-colors">事</button>
+                    <button onclick="handleCheckIn('LEAVE', '病')" class="p-4 bg-rose-50 text-rose-500 rounded-2xl font-black hover:bg-rose-100 transition-colors">病</button>
+                    <button onclick="handleCheckIn('OTHER', '特')" class="p-4 bg-purple-50 text-purple-500 rounded-2xl font-black hover:bg-purple-100 transition-colors">特</button>
+                    <button onclick="handleCheckIn('OTHER', '加')" class="p-4 bg-emerald-50 text-emerald-500 rounded-2xl font-black hover:bg-emerald-100 transition-colors">加</button>
+                </div>
+            </div>
         </div>
 
-        {/* Attendance Table */}
-        <div className="bg-white rounded-[2.5rem] p-8 shadow-sm border border-rose-50 overflow-hidden">
-          <div className="flex justify-between items-center mb-8">
-            <div>
-              <h2 className="text-xl font-black text-slate-700 italic">月度考勤自動彙整表</h2>
+        <!-- 報表區 -->
+        <div class="glass-panel p-8">
+            <div class="flex justify-between items-center mb-8">
+                <div>
+                    <h2 class="text-xl font-black text-gray-700 italic">月度考勤自動彙整表</h2>
+                    <p class="text-[10px] font-bold text-rose-300">數據已與 Cloud Firestore 實時同步</p>
+                </div>
             </div>
-          </div>
-          
-          <div className="overflow-x-auto pb-4 custom-scrollbar">
-            <table className="w-full min-w-[1000px]">
-              <thead>
-                <tr className="text-[10px] font-black text-rose-200 uppercase">
-                  <th className="p-4 text-left w-24">Staff</th>
-                  {daysInMonth.map(d => (
-                    <th key={d} className="p-2 text-center border-l border-rose-50/50">{d}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {STAFF_MEMBERS.map(staff => (
-                  <tr key={staff.id} className="border-t border-rose-50/50">
-                    <td className="p-4 font-black text-sm text-slate-500">{staff.name.split(' ')[0]}</td>
-                    {daysInMonth.map(d => {
-                      const dayKey = new Date(currentTime.getFullYear(), currentTime.getMonth(), d).toDateString();
-                      const label = attendanceData[staff.id]?.[dayKey];
-                      return (
-                        <td key={d} className="p-1 border-l border-rose-50/50 text-center">
-                          {label ? (
-                            <div className="w-8 h-8 mx-auto rounded-full bg-rose-400 text-white flex items-center justify-center text-xs font-bold">
-                              {label}
-                            </div>
-                          ) : "·"}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+            <div class="overflow-x-auto custom-scroll">
+                <table class="w-full text-left border-collapse min-w-[1000px]">
+                    <thead>
+                        <tr class="text-[10px] font-black text-rose-200 uppercase">
+                            <th class="p-4 w-24">Staff</th>
+                            <script>
+                                for(let i=1; i<=31; i++) {
+                                    document.write(`<th class="p-2 text-center border-l border-rose-50/50">${i}</th>`);
+                                }
+                            </script>
+                        </tr>
+                    </thead>
+                    <tbody id="attendance-body">
+                        <!-- 由 JS 動態生成 -->
+                    </tbody>
+                </table>
+            </div>
         </div>
-      </div>
 
-      {/* Toast Notification */}
-      <div className={`fixed bottom-8 right-8 bg-white shadow-2xl rounded-2xl p-4 border-l-4 transition-all duration-500 z-50 ${
-        toast.show ? 'translate-y-0 opacity-100' : 'translate-y-20 opacity-0'
-      } ${toast.isError ? 'border-red-400' : 'border-rose-400'}`}>
-        <div className="text-sm font-bold text-slate-600">{toast.msg}</div>
-      </div>
+        <!-- 通知 -->
+        <div id="status-toast" class="fixed bottom-10 right-10 bg-white shadow-2xl rounded-2xl p-4 border-l-4 border-rose-400 transform translate-y-32 transition-transform duration-500 flex items-center gap-3 z-50">
+            <div id="toast-icon" class="w-8 h-8 bg-rose-50 rounded-full flex items-center justify-center text-rose-400 text-sm">✨</div>
+            <div class="text-sm font-bold text-gray-600" id="toast-msg">系統就緒</div>
+        </div>
     </div>
-  );
-}
+
+    <!-- Firebase SDK -->
+    <script type="importmap">
+        {
+          "imports": {
+            "firebase/app": "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js",
+            "firebase/auth": "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js",
+            "firebase/firestore": "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"
+          }
+        }
+    </script>
+
+    <script type="module">
+        import { initializeApp } from "firebase/app";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, serverTimestamp } from "firebase/firestore";
+
+        // --- 您從 Firebase 拿到的正式金鑰 ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyCklhV_IZpDuH6NuGNFVPfuVzVcMC2sd_w",
+            authDomain: "my-checkin-app1.firebaseapp.com",
+            projectId: "my-checkin-app1",
+            storageBucket: "my-checkin-app1.firebasestorage.app",
+            messagingSenderId: "844504622971",
+            appId: "1:844504622971:web:e779f4fb2a67f24797ffde",
+            measurementId: "G-G6J48CCJW4"
+        };
+
+        const appId = 'kawaii-unified-checkin-v4';
+        const STAFF_MEMBERS = [
+            { id: 'staff_01', name: '小葵 🌻' },
+            { id: 'staff_02', name: '阿健 🛠️' },
+            { id: 'staff_03', name: '星星 🌟' },
+            { id: 'staff_04', name: '妮妮 🎀' },
+            { id: 'staff_05', name: '波波 🐶' }
+        ];
+
+        let db, auth, user;
+        let currentStaff = STAFF_MEMBERS[0];
+        let attendanceData = {};
+
+        async function init() {
+            updateDateUI();
+            renderStaffList();
+            renderEmptyTable();
+
+            try {
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                // 匿名登入
+                await signInAnonymously(auth);
+                
+                onAuthStateChanged(auth, (u) => {
+                    user = u;
+                    if (user) {
+                        setConnected(true);
+                        startListeners();
+                    }
+                });
+            } catch (err) {
+                console.error("Firebase Init Error:", err);
+                setConnected(false);
+                showToast("連線失敗：" + err.message, true);
+            }
+        }
+
+        function setConnected(connected) {
+            const statusEl = document.getElementById('sync-status');
+            const iconEl = document.getElementById('status-icon');
+            const btnMain = document.getElementById('btn-main-checkin');
+            const btnText = document.getElementById('checkin-text');
+
+            if (connected) {
+                statusEl.innerText = "● 已連線至雲端";
+                statusEl.className = "text-emerald-500 font-black";
+                iconEl.className = "w-14 h-14 bg-rose-400 rounded-2xl flex items-center justify-center text-white text-2xl font-black shadow-lg transition-colors";
+                iconEl.innerText = "小";
+                btnMain.className = "bg-emerald-400 hover:bg-emerald-500 active:scale-95 w-full max-w-[280px] aspect-[16/10] rounded-[3rem] shadow-[0_20px_40px_-10px_rgba(52,211,153,0.4)] flex flex-col items-center justify-center text-white gap-2 relative z-10 cursor-pointer transition-all";
+                btnMain.disabled = false;
+                btnText.innerText = "即刻簽到";
+            } else {
+                statusEl.innerText = "× 連線失敗";
+                statusEl.className = "text-red-500 font-black";
+                btnText.innerText = "連線失敗";
+            }
+        }
+
+        function renderStaffList() {
+            const list = document.getElementById('staff-list');
+            STAFF_MEMBERS.forEach((staff, index) => {
+                const btn = document.createElement('button');
+                btn.id = `btn-staff-${staff.id}`;
+                btn.className = `member-btn w-full p-4 rounded-2xl flex justify-between items-center font-bold transition-all ${index === 0 ? 'active' : 'bg-rose-50/30 text-slate-400'}`;
+                btn.innerHTML = `<span>${staff.name}</span>`;
+                btn.onclick = () => {
+                    document.querySelectorAll('.member-btn').forEach(b => {
+                        b.classList.remove('active');
+                        b.classList.add('bg-rose-50/30', 'text-slate-400');
+                    });
+                    btn.classList.add('active');
+                    btn.classList.remove('bg-rose-50/30', 'text-slate-400');
+                    currentStaff = staff;
+                };
+                list.appendChild(btn);
+            });
+        }
+
+        function renderEmptyTable() {
+            const tbody = document.getElementById('attendance-body');
+            STAFF_MEMBERS.forEach(staff => {
+                const tr = document.createElement('tr');
+                tr.className = "border-t border-rose-50/50";
+                let html = `<td class="p-4 font-black text-sm text-slate-500">${staff.name.split(' ')[0]}</td>`;
+                for(let i=1; i<=31; i++) {
+                    html += `<td class="p-1 border-l border-rose-50/50 text-center"><div id="cell-${staff.id}-${i}" class="w-1.5 h-1.5 rounded-full bg-rose-50 mx-auto"></div></td>`;
+                }
+                tr.innerHTML = html;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function startListeners() {
+            STAFF_MEMBERS.forEach(staff => {
+                const colPath = `artifacts/${appId}/public/data/records_${staff.id}`;
+                onSnapshot(collection(db, colPath), (snapshot) => {
+                    snapshot.docs.forEach(doc => {
+                        const data = doc.data();
+                        const recordDate = new Date(data.dayKey);
+                        // 僅顯示本月的
+                        if (recordDate.getMonth() === new Date().getMonth()) {
+                            updateCellUI(staff.id, recordDate.getDate(), data.label);
+                        }
+                    });
+                });
+            });
+        }
+
+        function updateCellUI(staffId, day, label) {
+            const cell = document.getElementById(`cell-${staffId}-${day}`);
+            if (!cell) return;
+            
+            let color = "bg-emerald-400";
+            if (label === '遲') color = "bg-red-400";
+            else if (['休', '事', '病'].includes(label)) color = "bg-blue-400";
+            else if (label === '特') color = "bg-purple-400";
+            else if (label === '加') color = "bg-emerald-500";
+
+            cell.className = `status-dot ${color} shadow-sm mx-auto`;
+            cell.innerText = label;
+        }
+
+        window.handleCheckIn = async (type, label) => {
+            if (!user) return showToast("尚未連線至雲端", true);
+            
+            showToast("正在處理...");
+            const today = new Date();
+            const todayKey = today.toDateString();
+            const docId = `${todayKey.replace(/\s+/g, '-')}_${currentStaff.id}`;
+            
+            try {
+                const colPath = `artifacts/${appId}/public/data/records_${currentStaff.id}`;
+                await setDoc(doc(db, colPath, docId), {
+                    staffId: currentStaff.id,
+                    name: currentStaff.name,
+                    type, label,
+                    time: today.toLocaleTimeString('zh-TW', { hour12: false }),
+                    dayKey: todayKey,
+                    timestamp: serverTimestamp()
+                });
+                showToast(`✨ ${currentStaff.name} 打卡成功 (${label})`);
+            } catch (err) {
+                console.error(err);
+                showToast("儲存失敗，請檢查權限", true);
+            }
+        };
+
+        document.getElementById('btn-main-checkin').onclick = () => window.handleCheckIn('WORK', '上');
+
+        function updateDateUI() {
+            const now = new Date();
+            document.getElementById('current-date').innerText = now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+        }
+
+        function showToast(msg, isError = false) {
+            const toast = document.getElementById('status-toast');
+            const msgEl = document.getElementById('toast-msg');
+            const iconEl = document.getElementById('toast-icon');
+            
+            msgEl.innerText = msg;
+            toast.className = `fixed bottom-10 right-10 bg-white shadow-2xl rounded-2xl p-4 border-l-4 transition-all duration-500 z-50 flex items-center gap-3 ${isError ? 'border-red-400' : 'border-rose-400'}`;
+            iconEl.innerText = isError ? "✕" : "✨";
+            iconEl.className = `w-8 h-8 rounded-full flex items-center justify-center text-sm ${isError ? 'bg-red-50 text-red-400' : 'bg-rose-50 text-rose-400'}`;
+            
+            toast.classList.remove('translate-y-32');
+            setTimeout(() => toast.classList.add('translate-y-32'), 3000);
+        }
+
+        setInterval(() => {
+            document.getElementById('clock').innerText = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+        }, 1000);
+
+        init();
+    </script>
+</body>
+</html>
