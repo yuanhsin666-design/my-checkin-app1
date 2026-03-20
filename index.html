@@ -1,326 +1,265 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>可愛風打卡系統 - 2% 遲到率自動補全</title>
-    <!-- 載入 React 核心與 Babel -->
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- 載入樣式與圖標 -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+import React, { useState, useEffect } from 'react';
+import { initializeApp, getApps } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, onSnapshot, collection, serverTimestamp, query } from 'firebase/firestore';
 
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
-        body { 
-            font-family: 'Noto Sans TC', sans-serif; 
-            background-color: #FDF8F9; 
+// --- 正式 Firebase 金鑰 ---
+const firebaseConfig = {
+  apiKey: "AIzaSyCklhV_IZpDuH6NuGNFVPfuVzVcMC2sd_w",
+  authDomain: "my-checkin-app1.firebaseapp.com",
+  projectId: "my-checkin-app1",
+  storageBucket: "my-checkin-app1.firebasestorage.app",
+  messagingSenderId: "844504622971",
+  appId: "1:844504622971:web:e779f4fb2a67f24797ffde",
+  measurementId: "G-G6J48CCJW4"
+};
+
+// 安全初始化
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = 'kawaii-unified-checkin-v4';
+
+const STAFF_MEMBERS = [
+  { id: 'staff_01', name: '小葵 🌻' },
+  { id: 'staff_02', name: '阿健 🛠️' },
+  { id: 'staff_03', name: '星星 🌟' },
+  { id: 'staff_04', name: '妮妮 🎀' },
+  { id: 'staff_05', name: '波波 🐶' }
+];
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [currentStaff, setCurrentStaff] = useState(STAFF_MEMBERS[0]);
+  const [attendanceData, setAttendanceData] = useState({});
+  const [toast, setToast] = useState({ show: false, msg: '', isError: false });
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [isConnecting, setIsConnecting] = useState(true);
+
+  // 1. 處理身份驗證
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        console.log("正在嘗試匿名登入 Firebase...");
+        const result = await signInAnonymously(auth);
+        console.log("登入成功:", result.user.uid);
+        setUser(result.user);
+        setIsConnecting(false);
+      } catch (err) {
+        console.error("Firebase Auth Error:", err);
+        showToast(`連線失敗: ${err.message}`, true);
+        setIsConnecting(false);
+      }
+    };
+    
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+        if (u) setUser(u);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. 監聽數據
+  useEffect(() => {
+    if (!user) return;
+
+    const unsubscribes = STAFF_MEMBERS.map(staff => {
+      const colPath = `artifacts/${appId}/public/data/records_${staff.id}`;
+      const colRef = collection(db, colPath);
+      
+      return onSnapshot(colRef, (snapshot) => {
+        const staffRecords = {};
+        snapshot.docs.forEach(d => {
+          const data = d.data();
+          if (data.dayKey) staffRecords[data.dayKey] = data.label;
+        });
+        setAttendanceData(prev => ({ ...prev, [staff.id]: staffRecords }));
+      }, (err) => {
+        console.error(`數據監聽失敗 (${staff.id}):`, err);
+        // 如果報錯是權限問題，通常是 Firebase Rules 沒設好
+        if (err.code === 'permission-denied') {
+            showToast("權限不足，請檢查 Firebase Rules", true);
         }
-        .custom-scroll::-webkit-scrollbar { width: 4px; }
-        .custom-scroll::-webkit-scrollbar-thumb { background: #FDA4AF; border-radius: 10px; }
-        .tab-active { background-color: #f43f5e; color: white; transform: scale(1.05); box-shadow: 0 10px 15px -3px rgba(244, 63, 94, 0.3); }
-    </style>
-</head>
-<body>
-    <div id="root"></div>
+      });
+    });
 
-    <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+    return () => unsubscribes.forEach(unsub => unsub());
+  }, [user]);
 
-        const STAFF_MEMBERS = [
-            { id: 'staff_01', name: '小葵 🌻', avatarColor: 'bg-pink-400' },
-            { id: 'staff_02', name: '阿健 🛠️', avatarColor: 'bg-blue-400' },
-            { id: 'staff_03', name: '星星 🌟', avatarColor: 'bg-yellow-400' },
-            { id: 'staff_04', name: '妮妮 🎀', avatarColor: 'bg-purple-400' },
-            { id: 'staff_05', name: '波波 🐶', avatarColor: 'bg-orange-400' },
-        ];
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
-        const LEAVE_TYPES = [
-            { id: 'REST', label: '休', color: 'text-blue-500', bg: 'bg-blue-50' },
-            { id: 'SPECIAL', label: '特', color: 'text-fuchsia-600', bg: 'bg-fuchsia-50' },
-            { id: 'PERSONAL', label: '事', color: 'text-orange-500', bg: 'bg-orange-50' },
-            { id: 'SICK', label: '病', color: 'text-red-500', bg: 'bg-red-50' },
-            { id: 'LATE', label: '遲', color: 'text-rose-600', bg: 'bg-rose-50' },
-            { id: 'OVERTIME', label: '加', color: 'text-emerald-600', bg: 'bg-emerald-50' },
-        ];
+  const showToast = (msg, isError = false) => {
+    setToast({ show: true, msg, isError });
+    setTimeout(() => setToast({ show: false, msg: '', isError: false }), 4000);
+  };
 
-        // --- 核心邏輯：種子隨機數生成器 ---
-        const seededRandom = (seed) => {
-            const x = Math.sin(seed) * 10000;
-            return x - Math.floor(x);
-        };
+  const handleCheckIn = async (type, label) => {
+    if (!user) {
+        showToast("尚未連線至雲端，請重新整理頁面", true);
+        return;
+    }
+    
+    const today = new Date();
+    const todayKey = today.toDateString();
+    const docId = `${todayKey.replace(/\s+/g, '-')}_${currentStaff.id}`;
+    
+    try {
+      const colPath = `artifacts/${appId}/public/data/records_${currentStaff.id}`;
+      const docRef = doc(db, colPath, docId);
+      
+      await setDoc(docRef, {
+        staffId: currentStaff.id,
+        name: currentStaff.name,
+        type, label,
+        time: today.toLocaleTimeString('zh-TW', { hour12: false }),
+        dayKey: todayKey,
+        timestamp: serverTimestamp()
+      });
+      showToast(`✨ ${currentStaff.name} 打卡成功 (${label})`);
+    } catch (err) {
+      console.error("儲存失敗:", err);
+      showToast(`儲存失敗: ${err.code || '未知錯誤'}`, true);
+    }
+  };
 
-        const generateLockedSchedule = (year, month) => {
-            const schedule = {};
-            const lastDay = new Date(year, month + 1, 0).getDate();
+  const daysInMonth = Array.from({ length: 31 }, (_, i) => i + 1);
 
-            STAFF_MEMBERS.forEach((staff, idx) => {
-                const staffDays = {};
-                let seed = year * 1000 + month * 10 + idx;
+  return (
+    <div className="min-h-screen bg-[#fff5f7] p-4 md:p-8 font-sans text-slate-700">
+      <div className="max-w-6xl mx-auto space-y-6">
+        
+        {/* Header */}
+        <header className="bg-white rounded-[2rem] p-6 shadow-sm border border-rose-50 flex flex-col md:flex-row justify-between items-center gap-4">
+          <div className="flex items-center gap-4">
+            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-white text-2xl font-black shadow-lg transition-colors ${user ? 'bg-rose-400' : 'bg-slate-300 animate-pulse'}`}>
+                {user ? '小' : '...'}
+            </div>
+            <div>
+              <h1 className="text-2xl font-black text-rose-500 tracking-tight italic">KAWAII SYSTEM</h1>
+              <p className="text-xs font-bold text-rose-300">
+                連線狀態：
+                <span className={user ? "text-emerald-500" : "text-amber-500"}>
+                    {user ? "● 已連線至雲端" : isConnecting ? "○ 正在連線..." : "× 連線失敗"}
+                </span>
+              </p>
+            </div>
+          </div>
+          <div className="text-center md:text-right">
+            <div className="text-3xl font-black text-slate-700 tabular-nums">
+              {currentTime.toLocaleTimeString('zh-TW', { hour12: false })}
+            </div>
+            <div className="text-[10px] font-bold text-rose-300 tracking-widest uppercase">
+              {currentTime.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+            </div>
+          </div>
+        </header>
 
-                const leaveDays = new Set();
-                while(leaveDays.size < 7) {
-                    leaveDays.add(Math.floor(seededRandom(seed++) * lastDay) + 1);
-                }
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+          {/* Staff Panel */}
+          <div className="md:col-span-3 bg-white rounded-[2rem] p-6 shadow-sm border border-rose-50">
+            <p className="text-[10px] font-black text-rose-200 uppercase tracking-widest mb-4">Member Panel</p>
+            <div className="space-y-2">
+              {STAFF_MEMBERS.map(staff => (
+                <button
+                  key={staff.id}
+                  onClick={() => setCurrentStaff(staff)}
+                  className={`w-full p-4 rounded-2xl flex justify-between items-center font-bold transition-all ${
+                    currentStaff.id === staff.id 
+                    ? 'bg-rose-500 text-white shadow-md scale-[1.02]' 
+                    : 'bg-rose-50/30 text-slate-400 hover:bg-rose-50'
+                  }`}
+                >
+                  <span>{staff.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
 
-                const specialLeaveDays = new Set();
-                if (staff.id === 'staff_01' || staff.id === 'staff_02') {
-                    const count = Math.floor(seededRandom(seed++) * 2) + 1;
-                    while(specialLeaveDays.size < count) {
-                        const d = Math.floor(seededRandom(seed++) * lastDay) + 1;
-                        if (!leaveDays.has(d)) specialLeaveDays.add(d);
-                    }
-                }
+          {/* Main Action */}
+          <div className="md:col-span-6 bg-white rounded-[2.5rem] p-10 shadow-sm border border-rose-50 flex flex-col items-center justify-center relative overflow-hidden group">
+            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-300 via-rose-300 to-blue-300"></div>
+            <p className="text-[10px] font-black text-rose-200 uppercase tracking-widest mb-10">Instant Check-In</p>
+            <button 
+              onClick={() => handleCheckIn('WORK', '上')}
+              disabled={!user}
+              className={`w-full max-w-[280px] aspect-[16/10] rounded-[3rem] shadow-lg flex flex-col items-center justify-center text-white gap-2 transition-all ${
+                user ? 'bg-emerald-400 hover:bg-emerald-500 active:scale-95' : 'bg-slate-200 cursor-not-allowed'
+              }`}
+            >
+              <span className="text-4xl font-black tracking-tighter">{user ? "即刻簽到" : "連線中..."}</span>
+            </button>
+          </div>
 
-                for (let d = 1; d <= lastDay; d++) {
-                    const date = new Date(year, month, d);
-                    const key = date.toDateString();
-                    if (leaveDays.has(d)) staffDays[key] = { label: '休', type: 'LEAVE' };
-                    else if (specialLeaveDays.has(d)) staffDays[key] = { label: '特', type: 'LEAVE' };
-                }
-                schedule[staff.id] = staffDays;
-            });
-            return schedule;
-        };
+          {/* Extra Options */}
+          <div className="md:col-span-3 bg-white rounded-[2rem] p-6 shadow-sm border border-rose-50">
+            <p className="text-[10px] font-black text-rose-200 uppercase tracking-widest mb-4">Extra Options</p>
+            <div className="grid grid-cols-2 gap-3">
+              {['休', '特', '事', '病', '遲', '加'].map(l => (
+                <button
+                  key={l}
+                  disabled={!user}
+                  onClick={() => handleCheckIn('OTHER', l)}
+                  className="p-4 rounded-2xl font-black text-lg transition-transform active:scale-90 bg-rose-50/50 text-rose-400 disabled:opacity-50"
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
 
-        function App() {
-            const [currentTime, setCurrentTime] = useState(new Date());
-            const [activeStaff, setActiveStaff] = useState(STAFF_MEMBERS[0]);
-            const [userRecords, setUserRecords] = useState({}); 
-            const [successMsg, setSuccessMsg] = useState('');
-
-            // 初始化與自動補齊 (含 2% 遲到率)
-            useEffect(() => {
-                const saved = localStorage.getItem('kawaii_checkin_data');
-                let initialRecords = {};
-                if (saved) {
-                    try { initialRecords = JSON.parse(saved); } catch(e) { console.error(e); }
-                }
-
-                const now = new Date();
-                const year = now.getFullYear();
-                const month = now.getMonth();
-                const todayNum = now.getDate();
-                const locked = generateLockedSchedule(year, month);
-                
-                const updatedRecords = { ...initialRecords };
-                let hasChanged = false;
-
-                STAFF_MEMBERS.forEach((staff, staffIdx) => {
-                    if (!updatedRecords[staff.id]) updatedRecords[staff.id] = {};
-                    const staffLocked = locked[staff.id] || {};
-
-                    for (let d = 1; d <= todayNum; d++) {
-                        const dateObj = new Date(year, month, d);
-                        const dKey = dateObj.toDateString();
-                        
-                        // 檢查是否需要自動補齊
-                        if (!staffLocked[dKey] && !updatedRecords[staff.id][dKey]) {
-                            // 使用種子隨機計算 2% 遲到率 (seed 包含 年、月、日、員工序號)
-                            const dailySeed = year * 10000 + month * 100 + d + staffIdx * 7;
-                            const rand = seededRandom(dailySeed);
-                            const isLate = rand < 0.02; // 2% 門檻
-
-                            updatedRecords[staff.id][dKey] = { 
-                                label: isLate ? '遲' : '上', 
-                                type: isLate ? 'LEAVE' : 'WORK', 
-                                time: isLate ? '09:15:24' : '08:52:10', 
-                                isAuto: true 
-                            };
-                            hasChanged = true;
-                        }
-                    }
-                });
-
-                if (hasChanged) {
-                    setUserRecords(updatedRecords);
-                    localStorage.setItem('kawaii_checkin_data', JSON.stringify(updatedRecords));
-                } else {
-                    setUserRecords(initialRecords);
-                }
-            }, []);
-
-            // 自動保存
-            useEffect(() => {
-                if (Object.keys(userRecords).length > 0) {
-                    localStorage.setItem('kawaii_checkin_data', JSON.stringify(userRecords));
-                }
-            }, [userRecords]);
-
-            useEffect(() => {
-                const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-                return () => clearInterval(timer);
-            }, []);
-
-            const lockedSchedule = useMemo(() => {
-                return generateLockedSchedule(currentTime.getFullYear(), currentTime.getMonth());
-            }, [currentTime.getFullYear(), currentTime.getMonth()]);
-
-            const allMergedRecords = useMemo(() => {
-                const merged = {};
-                STAFF_MEMBERS.forEach(staff => {
-                    merged[staff.id] = { 
-                        ...(lockedSchedule[staff.id] || {}), 
-                        ...(userRecords[staff.id] || {}) 
-                    };
-                });
-                return merged;
-            }, [lockedSchedule, userRecords]);
-
-            const handleCheckIn = (label, type = 'WORK') => {
-                const dateKey = currentTime.toDateString();
-                const newRecord = { label, type, time: currentTime.toLocaleTimeString(), isAuto: false };
-                
-                setUserRecords(prev => ({
-                    ...prev,
-                    [activeStaff.id]: {
-                        ...(prev[activeStaff.id] || {}),
-                        [dateKey]: newRecord
-                    }
-                }));
-
-                setSuccessMsg(`【${activeStaff.name}】登記成功：${label}`);
-                setTimeout(() => setSuccessMsg(''), 3000);
-            };
-
-            const daysInMonth = useMemo(() => {
-                const year = currentTime.getFullYear();
-                const month = currentTime.getMonth();
-                const days = new Date(year, month + 1, 0).getDate();
-                return Array.from({ length: days }, (_, i) => {
-                    const date = new Date(year, month, i + 1);
-                    return { day: i + 1, weekday: ['日', '一', '二', '三', '四', '五', '六'][date.getDay()], fullDate: date.toDateString() };
-                });
-            }, [currentTime]);
-
-            return (
-                <div className="min-h-screen p-4 md:p-8">
-                    <div className="max-w-7xl mx-auto space-y-6">
-                        
-                        <div className="flex flex-col md:flex-row justify-between items-center bg-white p-6 rounded-[2.5rem] shadow-sm border-2 border-rose-100 gap-4">
-                            <div className="flex items-center gap-4">
-                                <div className={`w-14 h-14 ${activeStaff.avatarColor} rounded-2xl flex items-center justify-center text-white text-2xl font-black shadow-lg transform -rotate-3`}>
-                                    {activeStaff.name[0]}
-                                </div>
-                                <div>
-                                    <h1 className="text-2xl font-black text-rose-500 italic uppercase tracking-tighter">Kawaii System <span className="text-[10px] bg-amber-50 text-amber-600 px-2 py-1 rounded-full not-italic ml-2 italic">2% Late Probability Active</span></h1>
-                                    <p className="text-xs font-bold text-slate-400">當前人員: {activeStaff.name}</p>
-                                </div>
+        {/* Attendance Table */}
+        <div className="bg-white rounded-[2.5rem] p-8 shadow-sm border border-rose-50 overflow-hidden">
+          <div className="flex justify-between items-center mb-8">
+            <div>
+              <h2 className="text-xl font-black text-slate-700 italic">月度考勤自動彙整表</h2>
+            </div>
+          </div>
+          
+          <div className="overflow-x-auto pb-4 custom-scrollbar">
+            <table className="w-full min-w-[1000px]">
+              <thead>
+                <tr className="text-[10px] font-black text-rose-200 uppercase">
+                  <th className="p-4 text-left w-24">Staff</th>
+                  {daysInMonth.map(d => (
+                    <th key={d} className="p-2 text-center border-l border-rose-50/50">{d}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {STAFF_MEMBERS.map(staff => (
+                  <tr key={staff.id} className="border-t border-rose-50/50">
+                    <td className="p-4 font-black text-sm text-slate-500">{staff.name.split(' ')[0]}</td>
+                    {daysInMonth.map(d => {
+                      const dayKey = new Date(currentTime.getFullYear(), currentTime.getMonth(), d).toDateString();
+                      const label = attendanceData[staff.id]?.[dayKey];
+                      return (
+                        <td key={d} className="p-1 border-l border-rose-50/50 text-center">
+                          {label ? (
+                            <div className="w-8 h-8 mx-auto rounded-full bg-rose-400 text-white flex items-center justify-center text-xs font-bold">
+                              {label}
                             </div>
-                            <div className="text-center md:text-right">
-                                <div className="text-3xl font-mono font-black text-slate-800 tracking-tighter">
-                                    {currentTime.toLocaleTimeString('zh-TW', { hour12: false })}
-                                </div>
-                                <div className="text-[10px] font-black text-rose-300 tracking-[0.3em] uppercase">{currentTime.toLocaleDateString()} LOCAL STORAGE</div>
-                            </div>
-                        </div>
+                          ) : "·"}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
 
-                        {successMsg && (
-                            <div className="bg-emerald-500 text-white p-4 rounded-2xl font-bold shadow-lg text-center animate-bounce">
-                                <i className="fas fa-dice mr-2"></i>{successMsg}
-                            </div>
-                        )}
-
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                            <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-rose-50">
-                                <p className="text-[10px] font-black text-slate-300 uppercase mb-4 tracking-widest">Member Panel</p>
-                                <div className="space-y-2">
-                                    {STAFF_MEMBERS.map(s => (
-                                        <button key={s.id} onClick={() => setActiveStaff(s)} className={`w-full text-left px-5 py-4 rounded-2xl font-black transition-all flex items-center justify-between ${activeStaff.id === s.id ? 'tab-active' : 'bg-slate-50 text-slate-400 hover:bg-rose-50'}`}>
-                                            {s.name}
-                                            {activeStaff.id === s.id && <i className="fas fa-check-circle animate-pulse"></i>}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-
-                            <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-rose-50 flex flex-col items-center justify-center text-center">
-                                <p className="text-[10px] font-black text-slate-300 uppercase mb-4 tracking-widest">Check-In</p>
-                                <button onClick={() => handleCheckIn('上')} className="w-full h-40 bg-emerald-400 hover:bg-emerald-500 text-white rounded-[2rem] font-black text-3xl shadow-xl transition-all active:scale-95 group relative overflow-hidden">
-                                    <span className="relative z-10">即刻簽到</span>
-                                    <i className="fas fa-fingerprint absolute bottom-4 right-4 text-white opacity-20 text-6xl group-hover:scale-125 transition-transform"></i>
-                                </button>
-                            </div>
-
-                            <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-rose-50">
-                                <p className="text-[10px] font-black text-slate-300 uppercase mb-4 tracking-widest">Extra Options</p>
-                                <div className="grid grid-cols-2 gap-3">
-                                    {LEAVE_TYPES.map(l => (
-                                        <button key={l.id} onClick={() => handleCheckIn(l.label, l.id === 'REST' || l.id === 'SPECIAL' ? 'LEAVE' : 'WORK')} className={`py-4 rounded-2xl font-black border-2 transition-all ${l.bg} ${l.color} border-transparent hover:border-current`}>
-                                            {l.label}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="bg-white rounded-[3rem] shadow-sm border-2 border-rose-50 overflow-hidden">
-                            <div className="p-8 border-b border-rose-50 flex flex-col md:flex-row justify-between items-center gap-4">
-                                <div>
-                                    <h2 className="font-black text-xl text-slate-700 italic">月度考勤自動彙整表</h2>
-                                    <p className="text-xs text-amber-500 font-bold mt-1">
-                                        <i className="fas fa-info-circle mr-1"></i> 已補全至今日，包含約 2% 的隨機遲到發生率
-                                    </p>
-                                </div>
-                                <button onClick={() => { if(confirm('重置所有數據？(包含自動補齊與手動紀錄)')) { localStorage.clear(); location.reload(); } }} className="text-[10px] font-black text-rose-300 hover:text-rose-500 border border-rose-100 px-4 py-2 rounded-full tracking-widest">HARD RESET</button>
-                            </div>
-                            
-                            <div className="overflow-x-auto custom-scroll">
-                                <table className="w-full text-left border-collapse min-w-[800px]">
-                                    <thead>
-                                        <tr className="bg-slate-50/50">
-                                            <th className="p-6 font-black text-slate-400 text-[10px] border-r sticky left-0 bg-slate-50 w-28 text-center uppercase">Staff</th>
-                                            {daysInMonth.map(d => (
-                                                <th key={d.day} className={`p-2 text-center border-r min-w-[50px] ${d.weekday === '日' ? 'bg-rose-50/50' : ''}`}>
-                                                    <div className="text-[8px] text-slate-300 font-bold uppercase">{d.weekday}</div>
-                                                    <div className="text-sm font-black text-slate-500">{d.day}</div>
-                                                </th>
-                                            ))}
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {STAFF_MEMBERS.map(staff => (
-                                            <tr key={staff.id} className="border-t border-rose-50 group hover:bg-rose-50/20">
-                                                <td className="p-6 font-black text-sm border-r bg-white sticky left-0 text-center shadow-[4px_0_10px_-5px_rgba(0,0,0,0.05)] group-hover:bg-rose-50 transition-colors">
-                                                    {staff.name.split(' ')[0]}
-                                                </td>
-                                                {daysInMonth.map(d => {
-                                                    const rec = (allMergedRecords[staff.id] || {})[d.fullDate];
-                                                    return (
-                                                        <td key={d.day} className={`p-1 border-r text-center ${d.weekday === '日' ? 'bg-rose-50/10' : ''}`}>
-                                                            {rec ? (
-                                                                <div className={`w-10 h-10 mx-auto flex flex-col items-center justify-center rounded-2xl text-xs font-black shadow-sm transform transition-transform hover:scale-110 cursor-default ${
-                                                                    rec.label === '上' ? (rec.isAuto ? 'bg-emerald-300 text-white' : 'bg-emerald-500 text-white') : 
-                                                                    rec.label === '遲' ? 'bg-rose-400 text-white animate-pulse-slow' : 
-                                                                    rec.label === '特' ? 'bg-fuchsia-500 text-white' :
-                                                                    rec.label === '加' ? 'bg-emerald-600 text-white' :
-                                                                    rec.label === '休' ? 'bg-sky-400 text-white opacity-80' :
-                                                                    'bg-amber-400 text-white'
-                                                                }`}>
-                                                                    <span>{rec.label}</span>
-                                                                    {rec.time && <span className="text-[6px] opacity-60 font-normal scale-90">{rec.time.split(':')[0]}:{rec.time.split(':')[1]}</span>}
-                                                                </div>
-                                                            ) : (
-                                                                <div className="w-2 h-2 rounded-full bg-slate-100 mx-auto"></div>
-                                                            )}
-                                                        </td>
-                                                    );
-                                                })}
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            );
-        }
-
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
-</body>
-</html>
+      {/* Toast Notification */}
+      <div className={`fixed bottom-8 right-8 bg-white shadow-2xl rounded-2xl p-4 border-l-4 transition-all duration-500 z-50 ${
+        toast.show ? 'translate-y-0 opacity-100' : 'translate-y-20 opacity-0'
+      } ${toast.isError ? 'border-red-400' : 'border-rose-400'}`}>
+        <div className="text-sm font-bold text-slate-600">{toast.msg}</div>
+      </div>
+    </div>
+  );
+}
